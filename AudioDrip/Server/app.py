@@ -1,0 +1,759 @@
+import json
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from urllib.parse import quote
+from pydantic import BaseModel
+from typing import List, Optional
+
+import requests
+import yt_dlp
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from db import init_pool, get_pool, get_db_cursor
+
+from recommendation import (
+    get_recommendations as get_song_recommendations,
+    get_song_by_id,
+    get_songs_by_ids,
+    get_up_next,
+    update_transition,
+    upsert_song_records,
+)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize PostgreSQL pool
+    try:
+        init_pool()
+    except Exception as e:
+        print(f"Warning: Database pool failed to initialize. Ensure init_db.py has run: {e}")
+    yield
+    # Cleanup DB connection pool
+    try:
+        pool = get_pool()
+        if pool:
+            pool.closeall()
+            print("PostgreSQL connection pool closed.")
+    except Exception:
+        pass
+
+app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+)
+
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+CACHE_DIR = BASE_DIR / "song_cache"
+CACHE_LIMIT_BYTES = 600 * 1024 * 1024
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+executor = ThreadPoolExecutor(max_workers=2)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Accept-Ranges"] = "bytes"
+    return response
+
+
+def is_song_cached(song_id):
+    return (CACHE_DIR / f"{song_id}.m4a").exists()
+
+
+def get_cache_size_bytes():
+    return sum(entry.stat().st_size for entry in CACHE_DIR.iterdir() if entry.is_file())
+
+
+def clear_audio_cache():
+    for entry in CACHE_DIR.iterdir():
+        if entry.is_file():
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+
+
+def clear_cache_if_needed():
+    if get_cache_size_bytes() > CACHE_LIMIT_BYTES:
+        clear_audio_cache()
+
+
+def inject_cache_status(songs, user_id: str = "anonymous"):
+    if not songs:
+        return []
+    song_ids = [song["id"] for song in songs]
+    liked_set = set()
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT song_id FROM liked_songs WHERE user_id = %s AND song_id = ANY(%s);", (user_id, song_ids))
+            rows = cursor.fetchall()
+            liked_set = {row[0] for row in rows}
+    except Exception:
+        pass
+        
+    for song in songs:
+        song["cached"] = is_song_cached(song["id"])
+        song["liked"] = song["id"] in liked_set
+    return songs
+
+
+def _itunes_to_song(item):
+    art_url = item.get("artworkUrl100", "")
+    cover = art_url.replace("100x100bb", "200x200bb") if art_url else ""
+    cover_xl = art_url.replace("100x100bb", "600x600bb") if art_url else ""
+    return {
+        "id": str(item.get("trackId", item.get("collectionId", 0))),
+        "title": item.get("trackName", "Unknown"),
+        "artist": item.get("artistName", "Unknown"),
+        "artist_id": item.get("artistId", 0),
+        "album": item.get("collectionName", "Single"),
+        "cover": cover,
+        "cover_xl": cover_xl,
+        "duration": item.get("trackTimeMillis", 0) // 1000,
+        "genre": item.get("primaryGenreName", "Music"),
+    }
+
+
+def search_songs(query, user_id: str = "anonymous"):
+    if not query:
+        return []
+    try:
+        response = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": query, "media": "music", "limit": 25, "country": "IN"},
+            timeout=10,
+        )
+        data = response.json()
+        songs = [_itunes_to_song(item) for item in data.get("results", []) if item.get("trackName")]
+        upsert_song_records(songs)
+        return inject_cache_status(songs, user_id=user_id)
+    except Exception:
+        return []
+
+
+def get_chart(user_id: str = "anonymous"):
+    try:
+        response = requests.get("https://itunes.apple.com/in/rss/topsongs/limit=25/json", timeout=10).json()
+        entries = response.get("feed", {}).get("entry", [])
+        songs = []
+        for entry in entries:
+            try:
+                art_url = ""
+                for img in entry.get("im:image", []):
+                    art_url = img.get("label", "")
+                cover = art_url.replace("170x170bb", "200x200bb") if art_url else ""
+                cover_xl = art_url.replace("170x170bb", "600x600bb") if art_url else ""
+                artist_id = 0
+                artist_link = entry.get("im:artist", {}).get("attributes", {}).get("href", "")
+                if "/id" in artist_link:
+                    try:
+                        artist_id = int(artist_link.split("/id")[-1].split("?")[0])
+                    except Exception:
+                        pass
+                track_id = str(entry.get("id", {}).get("attributes", {}).get("im:id", "0") or "0")
+                genre = entry.get("category", {}).get("attributes", {}).get("label", "Music")
+                songs.append(
+                    {
+                        "id": track_id,
+                        "title": entry.get("im:name", {}).get("label", "Unknown"),
+                        "artist": entry.get("im:artist", {}).get("label", "Unknown"),
+                        "artist_id": artist_id,
+                        "album": entry.get("im:collection", {}).get("im:name", {}).get("label", "Single"),
+                        "cover": cover,
+                        "cover_xl": cover_xl,
+                        "duration": 0,
+                        "genre": genre,
+                    }
+                )
+            except Exception:
+                continue
+        upsert_song_records(songs)
+        return inject_cache_status(songs, user_id=user_id)
+    except Exception:
+        return []
+
+
+def fetch_lyrics(artist, title):
+    try:
+        resp = requests.get(
+            "https://lrclib.net/api/search",
+            params={"artist_name": artist, "track_name": title},
+            headers={"User-Agent": "AudioDrip/1.0"},
+            timeout=5,
+        )
+        data = resp.json()
+        if isinstance(data, list) and data:
+            for item in data:
+                if item.get("syncedLyrics"):
+                    return {"type": "synced", "text": item["syncedLyrics"]}
+            for item in data:
+                if item.get("plainLyrics"):
+                    return {"type": "plain", "text": item["plainLyrics"]}
+        return {"type": "error", "text": "No lyrics found."}
+    except Exception:
+        return {"type": "error", "text": "Lyrics unavailable."}
+
+
+def fetch_artist_tracks(artist_id, limit=20):
+    try:
+        artist_id = int(artist_id or 0)
+        if artist_id <= 0:
+            return []
+        response = requests.get(
+            "https://itunes.apple.com/lookup",
+            params={"id": artist_id, "entity": "song", "limit": limit, "country": "IN"},
+            timeout=10,
+        )
+        data = response.json()
+        songs = [_itunes_to_song(item) for item in data.get("results", []) if item.get("wrapperType") == "track" and item.get("trackName")]
+        if songs:
+            upsert_song_records(songs)
+        return songs
+    except Exception:
+        return []
+
+
+def fetch_artist_search_results(artist_name, limit=25):
+    try:
+        artist_name = (artist_name or "").strip()
+        if not artist_name:
+            return []
+        response = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": artist_name, "media": "music", "entity": "song", "limit": limit, "country": "IN"},
+            timeout=10,
+        )
+        data = response.json()
+        songs = []
+        normalized_artist = artist_name.casefold()
+        for item in data.get("results", []):
+            item_artist = str(item.get("artistName", "")).strip()
+            if not item.get("trackName"):
+                continue
+            if normalized_artist not in item_artist.casefold() and item_artist.casefold() not in normalized_artist:
+                continue
+            songs.append(_itunes_to_song(item))
+        if songs:
+            upsert_song_records(songs)
+        return songs
+    except Exception:
+        return []
+
+
+def enrich_catalog_for_song(song_id):
+    song = get_song_by_id(song_id)
+    if not song:
+        return
+    fetched_songs = fetch_artist_tracks(song.get("artist_id"))
+    if not fetched_songs:
+        fetch_artist_search_results(song.get("artist"))
+
+
+def hydrate_song_ids(song_ids, user_id: str = "anonymous"):
+    return inject_cache_status(get_songs_by_ids(song_ids), user_id=user_id)
+
+
+def build_recommendation_response(song_id, user_id: str = "anonymous"):
+    enrich_catalog_for_song(song_id)
+    grouped_ids = get_song_recommendations(song_id)
+    return {
+        "behavior_based": hydrate_song_ids(grouped_ids.get("behavior_based", []), user_id=user_id),
+        "content_based": hydrate_song_ids(grouped_ids.get("content_based", []), user_id=user_id),
+    }
+
+
+def build_up_next_response(song_id, limit=10, user_id: str = "anonymous"):
+    enrich_catalog_for_song(song_id)
+    entries = get_up_next(song_id, limit=limit)
+    songs_by_id = {song["id"]: song for song in hydrate_song_ids([entry["song_id"] for entry in entries], user_id=user_id)}
+    result = []
+    for entry in entries:
+        song = songs_by_id.get(entry["song_id"])
+        if song:
+            item = dict(song)
+            item["reason"] = entry["reason"]
+            result.append(item)
+    return result
+
+
+def download_task(song_id, artist, title):
+    clear_cache_if_needed()
+    filepath = CACHE_DIR / f"{song_id}.m4a"
+    if filepath.exists():
+        return
+    query = f"{artist} - {title} audio"
+    ydl_opts = {
+        "format": "bestaudio[ext=m4a]/best",
+        "outtmpl": str(filepath),
+        "noplaylist": True,
+        "quiet": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f"ytsearch1:{query}"])
+        clear_cache_if_needed()
+    except Exception:
+        pass
+
+
+def build_proxy_response(url: str, incoming_headers, headers_json: str):
+    try:
+        try:
+            yt_headers = json.loads(headers_json or "{}")
+        except Exception:
+            yt_headers = {}
+
+        headers = {
+            "User-Agent": yt_headers.get("User-Agent", "Mozilla/5.0"),
+            "Accept": yt_headers.get("Accept", "*/*"),
+            "Accept-Language": yt_headers.get("Accept-Language", "en-us,en;q=0.5"),
+            "Sec-Fetch-Mode": yt_headers.get("Sec-Fetch-Mode", "navigate"),
+        }
+        if "range" in incoming_headers:
+            headers["Range"] = incoming_headers["range"]
+
+        req = requests.get(url, stream=True, headers=headers, timeout=30)
+        excluded_headers = {"content-encoding", "transfer-encoding", "connection"}
+        response_headers = {name: value for name, value in req.headers.items() if name.lower() not in excluded_headers}
+        response_headers["Accept-Ranges"] = "bytes"
+        return StreamingResponse(
+            req.iter_content(chunk_size=1024 * 16),
+            status_code=req.status_code,
+            media_type=req.headers.get("content-type", "audio/mp4"),
+            headers=response_headers,
+        )
+    except Exception as exc:
+        return PlainTextResponse(f"Stream error: {exc}", status_code=500)
+
+
+def render_play_response(request: Request, song_id: str, artist: str, title: str):
+    filename = f"{song_id}.m4a"
+    filepath = CACHE_DIR / filename
+    if filepath.exists():
+        base_url = str(request.base_url).rstrip("/")
+        return JSONResponse({"source": "local", "url": f"{base_url}/api/mobile/stream_cache/{filename}"})
+
+    query = f"{artist} - {title} audio"
+    ydl_opts = {
+        "format": "bestaudio[ext=m4a]/best",
+        "noplaylist": True,
+        "quiet": False,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            video = info["entries"][0] if "entries" in info else info
+            http_headers = video.get("http_headers", {})
+            base_url = str(request.base_url).rstrip("/")
+            proxy_url = f"{base_url}/api/mobile/stream_proxy?url={quote(video['url'])}&headers={quote(json.dumps(http_headers))}"
+            return JSONResponse({"source": "youtube", "url": proxy_url, "direct_url": video["url"], "headers": http_headers})
+        except Exception as exc:
+            return JSONResponse({"error": f"Song not found: {exc}"}, status_code=404)
+
+
+STATIC_DIR = BASE_DIR / "static"
+
+# Create static dir if not exists
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+
+@app.get("/")
+def serve_root():
+    index_path = STATIC_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return PlainTextResponse("AudioDrip Server is running. Relaunch with Frontend build inside 'static' directory.")
+
+
+
+@app.get("/api/mobile/search")
+def mobile_search(q: str = "", user_id: str = "anonymous"):
+    return JSONResponse(search_songs(q, user_id=user_id))
+
+
+@app.get("/api/mobile/chart")
+def mobile_chart(user_id: str = "anonymous"):
+    return JSONResponse(get_chart(user_id=user_id))
+
+
+@app.get("/api/mobile/recommend")
+def mobile_recommend(song_id: str = "", user_id: str = "anonymous"):
+    return JSONResponse(build_recommendation_response(song_id, user_id=user_id))
+
+
+@app.get("/api/mobile/up_next")
+def mobile_up_next(song_id: str = "", limit: int = 10, user_id: str = "anonymous"):
+    return JSONResponse(build_up_next_response(song_id, limit=limit or 10, user_id=user_id))
+
+
+@app.get("/api/mobile/lyrics")
+def mobile_lyrics(artist: str = "", title: str = ""):
+    return JSONResponse(fetch_lyrics(artist, title))
+
+
+@app.get("/api/mobile/play")
+def mobile_play(request: Request, id: str = "", artist: str = "", title: str = "", previous_song_id: str | None = None):
+    update_transition(previous_song_id, id)
+    return render_play_response(request, id, artist, title)
+
+
+@app.get("/api/mobile/stream_cache/{filename:path}")
+def mobile_stream_cache(filename: str):
+    filepath = CACHE_DIR / filename
+    if not filepath.exists():
+        return PlainTextResponse("Not Found", status_code=404)
+    return FileResponse(filepath)
+
+
+@app.get("/api/mobile/stream_proxy")
+def mobile_stream_proxy(request: Request, url: str = "", headers: str = "{}"):
+    if not url:
+        return PlainTextResponse("No URL", status_code=400)
+    return build_proxy_response(url, request.headers, headers)
+
+
+@app.post("/api/mobile/cache_song")
+async def mobile_cache_song(request: Request):
+    data = await request.json()
+    if not data:
+        return JSONResponse({"error": "No data"}, status_code=400)
+    executor.submit(download_task, str(data.get("id")), data.get("artist"), data.get("title"))
+    return JSONResponse({"status": "queued"})
+
+
+@app.get("/api/mobile/health")
+def mobile_health():
+    return JSONResponse({"status": "ok", "server": "AudioDrip", "version": "3.0", "timestamp": int(time.time())})
+
+
+@app.get("/api/mobile/liked")
+def get_liked_songs(user_id: str = "anonymous"):
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT s.id, s.title, s.artist, s.artist_id, s.album, s.cover, s.cover_xl, s.duration, s.genre,
+                       true as liked
+                FROM liked_songs l
+                JOIN songs s ON l.song_id = s.id
+                WHERE l.user_id = %s
+                ORDER BY l.liked_at DESC;
+            """, (user_id,))
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            songs = [dict(zip(columns, row)) for row in rows]
+            for song in songs:
+                song["cached"] = is_song_cached(song["id"])
+            return JSONResponse(songs)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mobile/like")
+def toggle_like_song(song_id: str, user_id: str = "anonymous"):
+    song_id = song_id.strip()
+    if not song_id:
+        return JSONResponse({"error": "Missing song_id"}, status_code=400)
+
+    try:
+        song = get_song_by_id(song_id)
+        if not song:
+            return JSONResponse({"error": "Song not found in database catalog"}, status_code=404)
+
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT 1 FROM liked_songs WHERE user_id = %s AND song_id = %s;", (user_id, song_id))
+            exists = cursor.fetchone()
+            if exists:
+                cursor.execute("DELETE FROM liked_songs WHERE user_id = %s AND song_id = %s;", (user_id, song_id))
+                liked_state = False
+            else:
+                cursor.execute("INSERT INTO liked_songs (user_id, song_id) VALUES (%s, %s);", (user_id, song_id))
+                liked_state = True
+            return JSONResponse({"status": "success", "liked": liked_state})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/mobile/playlists")
+def get_playlists(user_id: str = "anonymous"):
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT p.id, p.name, COUNT(ps.song_id)::integer as song_count, p.created_at::text
+                FROM playlists p
+                LEFT JOIN playlist_songs ps ON p.id = ps.playlist_id
+                WHERE p.user_id = %s
+                GROUP BY p.id
+                ORDER BY p.name ASC;
+            """, (user_id,))
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            return JSONResponse([dict(zip(columns, row)) for row in rows])
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mobile/playlists")
+def create_playlist(name: str, user_id: str = "anonymous"):
+    name = name.strip()
+    if not name:
+        return JSONResponse({"error": "Missing playlist name"}, status_code=400)
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("INSERT INTO playlists (name, user_id) VALUES (%s, %s) RETURNING id, name;", (name, user_id))
+            row = cursor.fetchone()
+            return JSONResponse({"status": "success", "playlist": {"id": row[0], "name": row[1]}})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mobile/playlists/delete")
+def delete_playlist(id: int):
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM playlists WHERE id = %s;", (id,))
+            return JSONResponse({"status": "success", "message": f"Playlist {id} deleted"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/mobile/playlists/{id}/songs")
+def get_playlist_songs(id: int, user_id: str = "anonymous"):
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT s.id, s.title, s.artist, s.artist_id, s.album, s.cover, s.cover_xl, s.duration, s.genre,
+                       (l.song_id IS NOT NULL) as liked
+                FROM playlist_songs ps
+                JOIN songs s ON ps.song_id = s.id
+                LEFT JOIN liked_songs l ON s.id = l.song_id AND l.user_id = %s
+                WHERE ps.playlist_id = %s
+                ORDER BY ps.added_at DESC;
+            """, (user_id, id))
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            songs = [dict(zip(columns, row)) for row in rows]
+            for song in songs:
+                song["cached"] = is_song_cached(song["id"])
+            return JSONResponse(songs)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mobile/playlists/{id}/add")
+def add_song_to_playlist(id: int, song_id: str):
+    song_id = song_id.strip()
+    if not song_id:
+        return JSONResponse({"error": "Missing song_id"}, status_code=400)
+    try:
+        song = get_song_by_id(song_id)
+        if not song:
+            return JSONResponse({"error": "Song not found in catalog database"}, status_code=404)
+            
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT 1 FROM playlists WHERE id = %s;", (id,))
+            if not cursor.fetchone():
+                return JSONResponse({"error": "Playlist not found"}, status_code=404)
+                
+            cursor.execute("""
+                INSERT INTO playlist_songs (playlist_id, song_id) 
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING;
+            """, (id, song_id))
+            return JSONResponse({"status": "success", "message": "Song added to playlist"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mobile/playlists/{id}/remove")
+def remove_song_from_playlist(id: int, song_id: str):
+    song_id = song_id.strip()
+    if not song_id:
+        return JSONResponse({"error": "Missing song_id"}, status_code=400)
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM playlist_songs WHERE playlist_id = %s AND song_id = %s;", (id, song_id))
+            return JSONResponse({"status": "success", "message": "Song removed from playlist"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# Interaction Endpoint Setup
+class InteractionRequest(BaseModel):
+    user_id: str
+    song_id: str
+    interaction_type: str
+    score: int
+
+
+@app.post("/api/mobile/interaction")
+def log_user_interaction(req: InteractionRequest):
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO user_interactions (user_id, song_id, interaction_type, score)
+                VALUES (%s, %s, %s, %s);
+            """, (req.user_id, req.song_id, req.interaction_type, req.score))
+        return JSONResponse({"status": "success"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# AI Playlist Endpoint Setup
+class AIPlaylistRequest(BaseModel):
+    prompt: str
+    user_id: str = "anonymous"
+
+
+@app.post("/api/mobile/ai_playlist")
+def generate_ai_playlist(req: AIPlaylistRequest):
+    prompt = req.prompt.strip()
+    if not prompt:
+        return JSONResponse({"error": "Prompt cannot be empty"}, status_code=400)
+    
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        print("Warning: GROQ_API_KEY not configured. Falling back to local catalog match.")
+        return generate_fallback_playlist_local(prompt, req.user_id)
+
+    try:
+        system_prompt = (
+            "You are AudioDrip's AI Assistant. The user wants to generate a playlist. "
+            "Analyze the prompt and output a JSON object with: "
+            "1. 'name': a creative title for this playlist. "
+            "2. 'genres': a list of genre names mentioned or implied. "
+            "3. 'keywords': a list of keyword strings to match song titles, albums, or artists. "
+            "Do not output any introductory or summary text. Output ONLY the JSON block. "
+            "Example format: {\"name\": \"Chill Night Vibe\", \"genres\": [\"synthwave\", \"lofi\"], \"keywords\": [\"night\", \"sleep\", \"slow\"]}"
+        )
+        
+        headers = {
+            "Authorization": f"Bearer {groq_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.1-8b-instant",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"}
+        }
+        
+        resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=10)
+        resp.raise_for_status()
+        resp_data = resp.json()
+        content = resp_data["choices"][0]["message"]["content"]
+        ai_meta = json.loads(content)
+        
+        pl_name = ai_meta.get("name", f"AI: {prompt[:30]}")
+        genres = ai_meta.get("genres", [])
+        keywords = ai_meta.get("keywords", [])
+        
+        matched_song_ids = []
+        with get_db_cursor() as cursor:
+            clauses = []
+            params = []
+            for g in genres:
+                clauses.append("genre ILIKE %s")
+                params.append(f"%{g}%")
+            for k in keywords:
+                clauses.append("title ILIKE %s OR artist ILIKE %s OR album ILIKE %s OR genre ILIKE %s")
+                params.extend([f"%{k}%", f"%{k}%", f"%{k}%", f"%{k}%"])
+                
+            if clauses:
+                query = f"SELECT id FROM songs WHERE {' OR '.join(clauses)} LIMIT 15;"
+                cursor.execute(query, params)
+                matched_song_ids = [row[0] for row in cursor.fetchall()]
+                
+        if len(matched_song_ids) < 5:
+            with get_db_cursor() as cursor:
+                cursor.execute("SELECT id FROM songs ORDER BY last_played_at DESC LIMIT 10;")
+                extra_ids = [row[0] for row in cursor.fetchall()]
+                for eid in extra_ids:
+                    if eid not in matched_song_ids:
+                        matched_song_ids.append(eid)
+                        
+        song_ids = matched_song_ids[:15]
+        
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("INSERT INTO playlists (name, user_id) VALUES (%s, %s) RETURNING id, name;", (pl_name, req.user_id))
+            row = cursor.fetchone()
+            playlist_id = row[0]
+            for sid in song_ids:
+                cursor.execute("INSERT INTO playlist_songs (playlist_id, song_id) VALUES (%s, %s) ON CONFLICT DO NOTHING;", (playlist_id, sid))
+                
+        return JSONResponse({"status": "success", "playlist": {"id": playlist_id, "name": pl_name}})
+        
+    except Exception as e:
+        print(f"Error calling Groq API: {e}")
+        return generate_fallback_playlist_local(prompt, req.user_id)
+
+
+def generate_fallback_playlist_local(prompt, user_id):
+    words = [w.strip().lower() for w in prompt.split() if len(w.strip()) > 3]
+    matched_songs = []
+    with get_db_cursor() as cursor:
+        if words:
+            query_clauses = " OR ".join(["title ILIKE %s OR artist ILIKE %s OR genre ILIKE %s"] * len(words))
+            params = []
+            for w in words:
+                params.extend([f"%{w}%", f"%{w}%", f"%{w}%"])
+            cursor.execute(f"SELECT id, title, artist FROM songs WHERE {query_clauses} LIMIT 10;", params)
+            matched_songs = cursor.fetchall()
+            
+        if not matched_songs:
+            cursor.execute("SELECT id, title, artist FROM songs LIMIT 10;")
+            matched_songs = cursor.fetchall()
+            
+    song_ids = [s[0] for s in matched_songs]
+    playlist_name = f"AI: {prompt[:30]}"
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("INSERT INTO playlists (name, user_id) VALUES (%s, %s) RETURNING id, name;", (playlist_name, user_id))
+            row = cursor.fetchone()
+            playlist_id = row[0]
+            for sid in song_ids:
+                cursor.execute("INSERT INTO playlist_songs (playlist_id, song_id) VALUES (%s, %s) ON CONFLICT DO NOTHING;", (playlist_id, sid))
+        return JSONResponse({"status": "success", "playlist": {"id": playlist_id, "name": playlist_name}})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/{path:path}")
+def serve_fallback(path: str):
+    if path.startswith("api/"):
+        return JSONResponse({"error": "Not Found"}, status_code=404)
+        
+    file_path = STATIC_DIR / path
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(file_path)
+        
+    index_path = STATIC_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+        
+    return PlainTextResponse("Not Found", status_code=404)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
