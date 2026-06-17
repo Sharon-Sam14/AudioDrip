@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { 
   Play, Pause, SkipForward, SkipBack, Search, Music, 
   Library, Trash2, FolderPlus, X, Settings, 
-  Grid, List, User2, Loader2, Sparkles
+  Grid, List, User2, Loader2, Sparkles, Download, Check, Heart
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMusicStore, seedTracks, trackToSong, songToTrack, getGlobalAudioElement } from './store/useMusicStore';
@@ -126,6 +126,7 @@ export default function App() {
     handleRemoveSongFromPlaylist,
     handleSearch,
     handleToggleLike,
+    cacheSong,
     
     pause: handleTogglePlay,
     skipNext: handleNextSong,
@@ -642,6 +643,7 @@ export default function App() {
                               isCurrent={activeTrackObj?.id === track.id}
                               onPlay={play}
                               onToggleLike={onToggleLike}
+                              onCache={cacheSong}
                             />
                           ))}
                         </motion.div>
@@ -691,9 +693,36 @@ export default function App() {
                                   {track.genre}
                                 </div>
 
-                                <span className="text-xs font-semibold text-txt-muted pr-2">
-                                  {Math.floor(track.duration / 60)}:{(track.duration % 60).toString().padStart(2, '0')}
-                                </span>
+                                <div className="flex items-center gap-3">
+                                  {/* Cache button */}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      cacheSong(track);
+                                    }}
+                                    className="p-1.5 rounded-lg text-txt-muted hover:text-accent-amber hover:bg-bg-tertiary/60 transition-colors cursor-pointer"
+                                    title={track.cached ? "Cached Offline" : "Download Offline"}
+                                  >
+                                    {track.cached ? (
+                                      <Check className="w-3.5 h-3.5 text-green-400" />
+                                    ) : (
+                                      <Download className="w-3.5 h-3.5" />
+                                    )}
+                                  </button>
+
+                                  {/* Like button */}
+                                  <button
+                                    onClick={(e) => onToggleLike(track.id, e)}
+                                    className="p-1.5 rounded-lg text-txt-muted hover:text-accent-rose hover:bg-bg-tertiary/60 transition-colors cursor-pointer"
+                                    title={track.isLiked ? "Unlike" : "Like"}
+                                  >
+                                    <Heart className={`w-3.5 h-3.5 ${track.isLiked ? 'fill-[#E11D72] text-[#E11D72]' : ''}`} />
+                                  </button>
+
+                                  <span className="text-xs font-semibold text-txt-muted pr-2">
+                                    {Math.floor(track.duration / 60)}:{(track.duration % 60).toString().padStart(2, '0')}
+                                  </span>
+                                </div>
                               </motion.div>
                             );
                           })}
@@ -884,6 +913,7 @@ export default function App() {
                                 isCurrent={activeTrackObj?.id === track.id}
                                 onPlay={play}
                                 onToggleLike={onToggleLike}
+                                onCache={cacheSong}
                               />
                             ))
                           )}
@@ -906,6 +936,7 @@ export default function App() {
                                 isCurrent={activeTrackObj?.id === track.id}
                                 onPlay={play}
                                 onToggleLike={onToggleLike}
+                                onCache={cacheSong}
                               />
                             ))
                           )}

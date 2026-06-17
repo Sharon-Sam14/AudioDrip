@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import type { User } from '@supabase/supabase-js';
-// Supabase imports removed
-import { getGenreForArtist } from '../data/genreMap';
+// getGenreForArtist removed
 import { extractDominantColors, updateSkinCSSVariables } from '../utils/ColorExtractor';
 
 export interface Track {
@@ -227,6 +226,7 @@ interface MusicState {
   handleSearch: (e?: React.FormEvent) => Promise<void>;
   handleToggleLike: (song: Song, e?: React.MouseEvent) => Promise<void>;
   handleGenerateAIPlaylist: (prompt: string) => Promise<void>;
+  cacheSong: (track: Track) => Promise<void>;
 
   // Auth Operations
   signUp: (email: string, password: string) => Promise<void>;
@@ -340,9 +340,25 @@ export const useMusicStore = create<MusicState>((set, get) => {
         console.error("Failed to extract color skins:", e);
       }
 
-      // Play audio preview
+      // Fetch real playable stream URL from backend (proxying / caching via yt-dlp)
+      let streamUrl = track.audioUrl;
       try {
-        audio.src = track.audioUrl;
+        const currentUser = get().user;
+        const userId = currentUser?.email || "anonymous";
+        const response = await fetch(`/api/mobile/play?id=${track.id}&artist=${encodeURIComponent(track.artist)}&title=${encodeURIComponent(track.title)}&user_id=${encodeURIComponent(userId)}`);
+        const data = await response.json();
+        if (data.url) {
+          streamUrl = data.url;
+        } else if (data.error) {
+          console.error("Backend error getting stream URL:", data.error);
+        }
+      } catch (err) {
+        console.error("Failed to retrieve playback stream from backend:", err);
+      }
+
+      // Play audio stream
+      try {
+        audio.src = streamUrl;
         audio.volume = get().isMuted ? 0 : get().volume;
         await audio.play();
         set({ isPlaying: true });
@@ -479,58 +495,75 @@ export const useMusicStore = create<MusicState>((set, get) => {
 
     // DEEZER CHART LOADER
     fetchChart: async () => {
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
       try {
-        const targetUrl = "https://api.deezer.com/chart/tracks?limit=12";
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
-        const response = await fetch(proxyUrl);
+        const response = await fetch(`/api/mobile/chart?user_id=${encodeURIComponent(userId)}`);
         const data = await response.json();
         
-        if (data && data.data) {
-          const mapped: Track[] = data.data.map((item: { id: number; title: string; artist?: { name: string }; album?: { title: string; cover_xl: string }; duration: number; preview: string }, index: number) => {
-            const artistName = item.artist?.name || "Unknown Artist";
-            const genre = getGenreForArtist(artistName);
-            
-            let badge: "Hot" | "New" | "Classic" | undefined = undefined;
-            if (index === 0) badge = "Hot";
-            else if (index === 1) badge = "New";
-            else if (index === 2) badge = "Classic";
-
-            return {
-              id: String(item.id),
-              title: item.title || "Unknown Track",
-              artist: artistName,
-              album: item.album?.title || "Single",
-              duration: item.duration || 180,
-              genre,
-              coverUrl: item.album?.cover_xl || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600",
-              audioUrl: item.preview || "",
-              playCount: 100000 - index * 7000,
-              isLiked: false,
-              badge
-            };
-          });
-
-          set({ queue: mapped, chartSongs: mapped.map(trackToSong) });
+        if (Array.isArray(data)) {
+          const mapped: Track[] = data.map(songToTrack);
+          set({ queue: mapped, chartSongs: data });
         }
       } catch (err) {
-        console.error("Error loading Deezer charts:", err);
+        console.error("Error loading charts from backend:", err);
       }
     },
 
     fetchLibrary: async () => {
-      // Stub library offline loaders
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
+      try {
+        const response = await fetch(`/api/mobile/cached?user_id=${encodeURIComponent(userId)}`);
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          set({ librarySongs: data });
+        }
+      } catch (err) {
+        console.error("Error fetching offline cache:", err);
+      }
     },
 
     fetchLikedSongs: async () => {
-      // Stub likes collections
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
+      try {
+        const response = await fetch(`/api/mobile/liked?user_id=${encodeURIComponent(userId)}`);
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          set({ likedSongs: data });
+        }
+      } catch (err) {
+        console.error("Error fetching liked songs:", err);
+      }
     },
 
     fetchPlaylists: async () => {
-      // Stub playlist indexes
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
+      try {
+        const response = await fetch(`/api/mobile/playlists?user_id=${encodeURIComponent(userId)}`);
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          set({ playlists: data });
+        }
+      } catch (err) {
+        console.error("Error fetching playlists:", err);
+      }
     },
 
-    fetchPlaylistSongs: async () => {
-      // Stub playlist tracks loader
+    fetchPlaylistSongs: async (playlistId: number) => {
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
+      try {
+        const response = await fetch(`/api/mobile/playlists/${playlistId}/songs?user_id=${encodeURIComponent(userId)}`);
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          set({ playlistSongs: data });
+        }
+      } catch (err) {
+        console.error("Error fetching playlist songs:", err);
+      }
     },
 
     fetchLyrics: async (track) => {
@@ -549,58 +582,70 @@ export const useMusicStore = create<MusicState>((set, get) => {
       if (e) e.preventDefault();
       const { newPlaylistName } = get();
       if (!newPlaylistName.trim()) return;
-      const id = Date.now();
-      const newPlaylist: Playlist = {
-        id,
-        name: newPlaylistName,
-        song_count: 0,
-        created_at: new Date().toISOString()
-      };
-      set((state) => ({
-        playlists: [...state.playlists, newPlaylist],
-        showCreateModal: false,
-        newPlaylistName: ''
-      }));
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
+      try {
+        const response = await fetch(`/api/mobile/playlists?name=${encodeURIComponent(newPlaylistName)}&user_id=${encodeURIComponent(userId)}`, {
+          method: 'POST'
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+          await get().fetchPlaylists();
+          set({ showCreateModal: false, newPlaylistName: '' });
+        }
+      } catch (err) {
+        console.error("Error creating playlist:", err);
+      }
     },
 
     handleDeletePlaylist: async (playlistId, e) => {
       if (e) e.stopPropagation();
-      set((state) => ({
-        playlists: state.playlists.filter(p => p.id !== playlistId),
-        selectedPlaylist: null
-      }));
+      try {
+        const response = await fetch(`/api/mobile/playlists/delete?id=${playlistId}`, {
+          method: 'POST'
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+          await get().fetchPlaylists();
+          set({ selectedPlaylist: null });
+        }
+      } catch (err) {
+        console.error("Error deleting playlist:", err);
+      }
     },
 
     handleAddSongToPlaylist: async (playlistId) => {
       const { songToAddToPlaylist } = get();
       if (!songToAddToPlaylist) return;
-
-      set((state) => {
-        const nextPlaylistSongs = [...state.playlistSongs, songToAddToPlaylist];
-        const nextPlaylists = state.playlists.map(p => 
-          p.id === playlistId ? { ...p, song_count: p.song_count + 1 } : p
-        );
-        return {
-          playlistSongs: nextPlaylistSongs,
-          playlists: nextPlaylists,
-          showAddModal: false,
-          songToAddToPlaylist: null
-        };
-      });
+      try {
+        const response = await fetch(`/api/mobile/playlists/${playlistId}/add?song_id=${encodeURIComponent(songToAddToPlaylist.id)}`, {
+          method: 'POST'
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+          await get().fetchPlaylistSongs(playlistId);
+          await get().fetchPlaylists();
+          set({ showAddModal: false, songToAddToPlaylist: null });
+        }
+      } catch (err) {
+        console.error("Error adding song to playlist:", err);
+      }
     },
 
     handleRemoveSongFromPlaylist: async (playlistId, songId, e) => {
       if (e) e.stopPropagation();
-      set((state) => {
-        const nextPlaylistSongs = state.playlistSongs.filter(s => s.id !== songId);
-        const nextPlaylists = state.playlists.map(p => 
-          p.id === playlistId ? { ...p, song_count: Math.max(0, p.song_count - 1) } : p
-        );
-        return {
-          playlistSongs: nextPlaylistSongs,
-          playlists: nextPlaylists
-        };
-      });
+      try {
+        const response = await fetch(`/api/mobile/playlists/${playlistId}/remove?song_id=${encodeURIComponent(songId)}`, {
+          method: 'POST'
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+          await get().fetchPlaylistSongs(playlistId);
+          await get().fetchPlaylists();
+        }
+      } catch (err) {
+        console.error("Error removing song from playlist:", err);
+      }
     },
 
     handleSearch: async (e) => {
@@ -609,32 +654,18 @@ export const useMusicStore = create<MusicState>((set, get) => {
       if (!searchQuery.trim()) return;
 
       set({ isSearching: true });
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
       try {
-        const targetUrl = `https://api.deezer.com/search?q=${encodeURIComponent(searchQuery)}&limit=25`;
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
-        const response = await fetch(proxyUrl);
+        const response = await fetch(`/api/mobile/search?q=${encodeURIComponent(searchQuery)}&user_id=${encodeURIComponent(userId)}`);
         const data = await response.json();
         
-        if (data && data.data) {
-          const mapped: Track[] = data.data.map((item: { id: number; title: string; artist?: { name: string }; album?: { title: string; cover_xl: string }; duration: number; preview: string }) => {
-            const artistName = item.artist?.name || "Unknown Artist";
-            return {
-              id: String(item.id),
-              title: item.title || "Unknown Track",
-              artist: artistName,
-              album: item.album?.title || "Single",
-              duration: item.duration || 180,
-              genre: getGenreForArtist(artistName),
-              coverUrl: item.album?.cover_xl || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600",
-              audioUrl: item.preview || "",
-              playCount: 50000,
-              isLiked: false
-            };
-          });
-          set({ searchResults: mapped.map(trackToSong), queue: mapped });
+        if (Array.isArray(data)) {
+          const mapped: Track[] = data.map(songToTrack);
+          set({ searchResults: data, queue: mapped });
         }
       } catch (err) {
-        console.error("Error searching Deezer:", err);
+        console.error("Error searching backend:", err);
       } finally {
         set({ isSearching: false });
       }
@@ -642,65 +673,159 @@ export const useMusicStore = create<MusicState>((set, get) => {
 
     handleToggleLike: async (song, e) => {
       if (e) e.stopPropagation();
-      get().toggleLike(song.id);
-      
-      // Update likedSongs state locally
-      set((state) => {
-        const isCurrentlyLiked = state.likedSongs.some(s => s.id === song.id);
-        const nextLiked = isCurrentlyLiked
-          ? state.likedSongs.filter(s => s.id !== song.id)
-          : [...state.likedSongs, { ...song, liked: true }];
-        return { likedSongs: nextLiked };
-      });
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
+      try {
+        const response = await fetch(`/api/mobile/like?song_id=${encodeURIComponent(song.id)}&user_id=${encodeURIComponent(userId)}`, {
+          method: 'POST'
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+          get().toggleLike(song.id);
+          // Sync likedSongs locally by refreshing from backend
+          await get().fetchLikedSongs();
+          // Update cached tracks in discover
+          await get().fetchChart();
+        }
+      } catch (err) {
+        console.error("Error toggling like on backend:", err);
+      }
     },
 
     handleGenerateAIPlaylist: async (prompt) => {
       if (!prompt.trim()) return;
       set({ isGeneratingAIPlaylist: true });
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      const id = Date.now();
-      const plName = `AI: ${prompt.slice(0, 20)}...`;
-      
-      set((state) => {
-        const newPlaylist: Playlist = {
-          id,
-          name: plName,
-          song_count: state.queue.slice(0, 6).length,
-          created_at: new Date().toISOString()
-        };
-        return {
-          playlists: [...state.playlists, newPlaylist],
-          playlistSongs: state.queue.slice(0, 6).map(trackToSong),
-          selectedPlaylist: newPlaylist,
-          librarySubTab: 'playlists',
-          isGeneratingAIPlaylist: false
-        };
-      });
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
+      try {
+        const response = await fetch(`/api/mobile/ai_playlist`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, user_id: userId })
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+          await get().fetchPlaylists();
+          const playlistList = get().playlists;
+          const newPL = playlistList.find(p => p.id === data.playlist.id) || data.playlist;
+          set({
+            selectedPlaylist: newPL,
+            librarySubTab: 'playlists'
+          });
+          await get().fetchPlaylistSongs(newPL.id);
+        }
+      } catch (err) {
+        console.error("Error generating AI playlist:", err);
+      } finally {
+        set({ isGeneratingAIPlaylist: false });
+      }
+    },
+
+    cacheSong: async (track: Track) => {
+      try {
+        const response = await fetch('/api/mobile/cache_song', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: track.id,
+            artist: track.artist,
+            title: track.title
+          })
+        });
+        const data = await response.json();
+        if (data.status === 'queued') {
+          // Optimistically update cached state
+          set((state) => {
+            const updateCached = (list: Track[]) =>
+              list.map(t => t.id === track.id ? { ...t, cached: true } : t);
+            
+            const updateCachedSong = (list: Song[]) =>
+              list.map(s => s.id === track.id ? { ...s, cached: true } : s);
+
+            return {
+              queue: updateCached(state.queue),
+              history: updateCached(state.history),
+              chartSongs: updateCachedSong(state.chartSongs),
+              searchResults: updateCachedSong(state.searchResults),
+              currentTrack: state.currentTrack && state.currentTrack.id === track.id
+                ? { ...state.currentTrack, cached: true }
+                : state.currentTrack
+            };
+          });
+
+          // Refresh cache list after a short delay
+          setTimeout(() => {
+            get().fetchLibrary();
+            get().fetchChart();
+          }, 3000);
+        }
+      } catch (err) {
+        console.error("Error requesting song download/cache:", err);
+      }
     },
 
     // Auth actions implementation
     signUp: async (email, password) => {
-      console.log(`signUp simulation: ${email} (pw len: ${password.length})`);
       set({ authLoading: true, authError: null, authMessage: null });
-      await new Promise(resolve => setTimeout(resolve, 600));
-      const mockUser = { id: `mock-user-${Date.now()}`, email };
-      localStorage.setItem('audiodrip_mock_user', JSON.stringify(mockUser));
-      set({ user: mockUser as unknown as User, authLoading: false });
+      try {
+        const response = await fetch('/api/mobile/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await response.json();
+        if (data.error) {
+          set({ authError: data.error, authLoading: false });
+        } else {
+          localStorage.setItem('audiodrip_mock_user', JSON.stringify(data.user));
+          set({ user: data.user as unknown as User, authLoading: false, showAuthModal: false });
+          // Fetch authenticated user's content
+          await get().fetchLikedSongs();
+          await get().fetchPlaylists();
+          await get().fetchLibrary();
+          await get().fetchChart();
+        }
+      } catch (err) {
+        console.error("SignUp backend error:", err);
+        set({ authError: "Failed to connect to authentication server", authLoading: false });
+      }
     },
 
     signIn: async (email, password) => {
-      console.log(`signIn simulation: ${email} (pw len: ${password.length})`);
       set({ authLoading: true, authError: null, authMessage: null });
-      await new Promise(resolve => setTimeout(resolve, 600));
-      const mockUser = { id: `mock-user-123`, email };
-      localStorage.setItem('audiodrip_mock_user', JSON.stringify(mockUser));
-      set({ user: mockUser as unknown as User, authLoading: false, showAuthModal: false });
+      try {
+        const response = await fetch('/api/mobile/signin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await response.json();
+        if (data.error) {
+          set({ authError: data.error, authLoading: false });
+        } else {
+          localStorage.setItem('audiodrip_mock_user', JSON.stringify(data.user));
+          set({ user: data.user as unknown as User, authLoading: false, showAuthModal: false });
+          // Fetch authenticated user's content
+          await get().fetchLikedSongs();
+          await get().fetchPlaylists();
+          await get().fetchLibrary();
+          await get().fetchChart();
+        }
+      } catch (err) {
+        console.error("SignIn backend error:", err);
+        set({ authError: "Failed to connect to authentication server", authLoading: false });
+      }
     },
 
     signOut: async () => {
       set({ authLoading: true, authError: null, authMessage: null });
       localStorage.removeItem('audiodrip_mock_user');
       set({ user: null, authLoading: false });
+      // Reload public lists
+      await get().fetchLikedSongs();
+      await get().fetchPlaylists();
+      await get().fetchLibrary();
+      await get().fetchChart();
     },
 
     initAuth: () => {

@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { motion, useMotionValue, useSpring, useTransform } from 'framer-motion';
-import { Play, Pause, Heart } from 'lucide-react';
+import { Play, Pause, Heart, Download, Check } from 'lucide-react';
 import type { Track } from '../store/useMusicStore';
 import { VinylRecord } from './VinylRecord';
 
@@ -10,6 +10,7 @@ interface TrackCardProps {
   isCurrent: boolean;
   onPlay: (track: Track) => void;
   onToggleLike?: (id: string, e: React.MouseEvent) => void;
+  onCache?: (track: Track, e: React.MouseEvent) => void;
   className?: string;
 }
 
@@ -19,6 +20,7 @@ export const TrackCard: React.FC<TrackCardProps> = ({
   isCurrent,
   onPlay,
   onToggleLike,
+  onCache,
   className = '',
 }) => {
   const [isHovered, setIsHovered] = useState(false);
@@ -126,6 +128,24 @@ export const TrackCard: React.FC<TrackCardProps> = ({
             )}
           </button>
         </div>
+
+        {/* Cache/Download button */}
+        {onCache && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onCache(track, e);
+            }}
+            className="absolute top-3 right-12 p-2 rounded-full bg-black/45 text-txt-primary hover:text-accent-amber hover:scale-110 transition-all z-20"
+            title={track.cached ? "Cached Offline" : "Download Offline"}
+          >
+            {track.cached ? (
+              <Check className="w-3.5 h-3.5 text-green-400" />
+            ) : (
+              <Download className="w-3.5 h-3.5 text-txt-primary" />
+            )}
+          </button>
+        )}
 
         {/* Favorite/Heart top-right floating button */}
         {onToggleLike && (

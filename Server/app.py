@@ -75,7 +75,18 @@ async def security_headers(request: Request, call_next):
 
 
 def is_song_cached(song_id):
-    return (CACHE_DIR / f"{song_id}.m4a").exists()
+    for ext in ["m4a", "webm", "opus", "mp3", "mp4"]:
+        if (CACHE_DIR / f"{song_id}.{ext}").exists():
+            return True
+    return False
+
+
+def get_cached_file(song_id):
+    for ext in ["m4a", "webm", "opus", "mp3", "mp4"]:
+        filepath = CACHE_DIR / f"{song_id}.{ext}"
+        if filepath.exists():
+            return filepath
+    return None
 
 
 def get_cache_size_bytes():
@@ -296,16 +307,18 @@ def build_up_next_response(song_id, limit=10, user_id: str = "anonymous"):
 
 def download_task(song_id, artist, title):
     clear_cache_if_needed()
-    filepath = CACHE_DIR / f"{song_id}.m4a"
-    if filepath.exists():
+    if is_song_cached(song_id):
         return
     query = f"{artist} - {title} audio"
+    cookie_path = BASE_DIR / "cookies.txt"
     ydl_opts = {
         "format": "bestaudio[ext=m4a]/best",
-        "outtmpl": str(filepath),
+        "outtmpl": str(CACHE_DIR / f"{song_id}.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
     }
+    if cookie_path.exists():
+        ydl_opts["cookiefile"] = str(cookie_path)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([f"ytsearch1:{query}"])
@@ -345,18 +358,21 @@ def build_proxy_response(url: str, incoming_headers, headers_json: str):
 
 
 def render_play_response(request: Request, song_id: str, artist: str, title: str):
-    filename = f"{song_id}.m4a"
-    filepath = CACHE_DIR / filename
-    if filepath.exists():
+    cached_file = get_cached_file(song_id)
+    if cached_file:
+        filename = cached_file.name
         base_url = str(request.base_url).rstrip("/")
         return JSONResponse({"source": "local", "url": f"{base_url}/api/mobile/stream_cache/{filename}"})
 
     query = f"{artist} - {title} audio"
+    cookie_path = BASE_DIR / "cookies.txt"
     ydl_opts = {
         "format": "bestaudio[ext=m4a]/best",
         "noplaylist": True,
         "quiet": False,
     }
+    if cookie_path.exists():
+        ydl_opts["cookiefile"] = str(cookie_path)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(f"ytsearch1:{query}", download=False)
@@ -436,6 +452,78 @@ async def mobile_cache_song(request: Request):
         return JSONResponse({"error": "No data"}, status_code=400)
     executor.submit(download_task, str(data.get("id")), data.get("artist"), data.get("title"))
     return JSONResponse({"status": "queued"})
+
+
+@app.get("/api/mobile/cached")
+def get_cached_songs(user_id: str = "anonymous"):
+    try:
+        song_ids = []
+        for entry in CACHE_DIR.iterdir():
+            if entry.is_file() and not entry.name.startswith('.'):
+                song_id = entry.stem
+                song_ids.append(song_id)
+        
+        if not song_ids:
+            return JSONResponse([])
+            
+        songs = get_songs_by_ids(song_ids)
+        return JSONResponse(inject_cache_status(songs, user_id=user_id))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/mobile/signup")
+def mobile_signup(req: AuthRequest):
+    email = req.email.strip().lower()
+    password = req.password
+    if not email or not password:
+        return JSONResponse({"error": "Email and password are required"}, status_code=400)
+    
+    import hashlib
+    hashed_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
+    
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT 1 FROM users WHERE email = %s;", (email,))
+            if cursor.fetchone():
+                return JSONResponse({"error": "User already exists"}, status_code=400)
+            
+            cursor.execute("INSERT INTO users (email, password) VALUES (%s, %s) RETURNING id, email;", (email, hashed_password))
+            row = cursor.fetchone()
+            return JSONResponse({"status": "success", "user": {"id": str(row[0]), "email": row[1]}})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mobile/signin")
+def mobile_signin(req: AuthRequest):
+    email = req.email.strip().lower()
+    password = req.password
+    if not email or not password:
+        return JSONResponse({"error": "Email and password are required"}, status_code=400)
+    
+    import hashlib
+    hashed_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
+    
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT id, email, password FROM users WHERE email = %s;", (email,))
+            row = cursor.fetchone()
+            if not row:
+                return JSONResponse({"error": "Invalid email or password"}, status_code=400)
+            
+            db_id, db_email, db_password = row
+            if db_password != hashed_password:
+                return JSONResponse({"error": "Invalid email or password"}, status_code=400)
+                
+            return JSONResponse({"status": "success", "user": {"id": str(db_id), "email": db_email}})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/mobile/health")
