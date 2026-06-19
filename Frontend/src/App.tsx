@@ -429,9 +429,7 @@ export default function App() {
             <div className="w-full border-t border-border-subtle/40 pt-4 flex items-center justify-center">
               {user ? (
                 <button
-                  onClick={() => {
-                    if (confirm('Sign Out?')) signOut();
-                  }}
+                  onClick={() => signOut()}
                   className="flex items-center gap-2 cursor-pointer w-full justify-center px-2"
                 >
                   <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-accent-rose to-accent-sienna flex items-center justify-center text-white text-xs font-bold border border-white/10">
