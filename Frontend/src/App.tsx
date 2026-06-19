@@ -7,7 +7,6 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMusicStore, seedTracks, trackToSong, songToTrack, getGlobalAudioElement } from './store/useMusicStore';
 import type { Track } from './store/useMusicStore';
-import { isSupabaseConfigured } from './utils/supabaseClient';
 
 // Custom components
 import { ParticleField } from './components/ParticleField';
@@ -124,7 +123,6 @@ export default function App() {
     handleDeletePlaylist,
     handleAddSongToPlaylist,
     handleRemoveSongFromPlaylist,
-    handleSearch,
     handleToggleLike,
     cacheSong,
     
@@ -172,6 +170,15 @@ export default function App() {
   // Skeleton loading state
   const [isLoading, setIsLoading] = useState(true);
 
+  // DB health status
+  const [dbStatus, setDbStatus] = useState<'checking' | 'ok' | 'error'>('checking');
+
+  // Wrapper to adapt cacheSong (1-arg) to TrackCard onCache (2-arg) signature
+  const handleCache = (track: import('./store/useMusicStore').Track, _e?: React.MouseEvent) => {
+    cacheSong(track);
+  };
+
+
   // Initialize
   useEffect(() => {
     initAuth();
@@ -184,8 +191,15 @@ export default function App() {
     const timer = setTimeout(() => {
       setIsLoading(false);
     }, 1200);
+
+    // Check DB health
+    fetch('/api/mobile/health')
+      .then(r => r.ok ? setDbStatus('ok') : setDbStatus('error'))
+      .catch(() => setDbStatus('error'));
+
     return () => clearTimeout(timer);
   }, [initAuth, fetchChart, fetchLibrary, fetchLikedSongs, fetchPlaylists]);
+
 
   // Listen to Cmd/Ctrl + K to toggle spotlight search modal
   useEffect(() => {
@@ -643,7 +657,7 @@ export default function App() {
                               isCurrent={activeTrackObj?.id === track.id}
                               onPlay={play}
                               onToggleLike={onToggleLike}
-                              onCache={cacheSong}
+                              onCache={handleCache}
                             />
                           ))}
                         </motion.div>
@@ -913,7 +927,7 @@ export default function App() {
                                 isCurrent={activeTrackObj?.id === track.id}
                                 onPlay={play}
                                 onToggleLike={onToggleLike}
-                                onCache={cacheSong}
+                                onCache={handleCache}
                               />
                             ))
                           )}
@@ -936,7 +950,7 @@ export default function App() {
                                 isCurrent={activeTrackObj?.id === track.id}
                                 onPlay={play}
                                 onToggleLike={onToggleLike}
-                                onCache={cacheSong}
+                                onCache={handleCache}
                               />
                             ))
                           )}
@@ -1250,10 +1264,7 @@ export default function App() {
         tracks={seedTracks}
         onPlay={play}
         searchQuery={searchQuery}
-        onSearchChange={(q) => {
-          setSearchQuery(q);
-          handleSearch();
-        }}
+        onSearchChange={setSearchQuery}
       />
 
       {/* ========================================================
@@ -1285,9 +1296,21 @@ export default function App() {
                     <p className="text-xs font-bold text-txt-primary">PostgreSQL Status</p>
                     <p className="text-[10px] text-txt-muted mt-0.5">Database connectivity indicators</p>
                   </div>
-                  <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-green-400 bg-green-500/10 px-2.5 py-1 rounded-full border border-green-500/20">
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" /> Active
-                  </span>
+                  {dbStatus === 'checking' && (
+                    <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-txt-muted bg-bg-tertiary px-2.5 py-1 rounded-full border border-border-subtle">
+                      <span className="w-1.5 h-1.5 rounded-full bg-txt-muted animate-pulse" /> Checking…
+                    </span>
+                  )}
+                  {dbStatus === 'ok' && (
+                    <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-green-400 bg-green-500/10 px-2.5 py-1 rounded-full border border-green-500/20">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" /> Active
+                    </span>
+                  )}
+                  {dbStatus === 'error' && (
+                    <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-red-400 bg-red-500/10 px-2.5 py-1 rounded-full border border-red-500/20">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400" /> Offline
+                    </span>
+                  )}
                 </div>
 
                 {/* Default visualizer modes preferences */}
@@ -1544,17 +1567,17 @@ export default function App() {
                       disabled={authLoading}
                       className="py-3 bg-txt-primary hover:bg-txt-primary/90 text-bg-primary rounded-xl text-xs font-bold uppercase tracking-wider mt-2 transition-colors cursor-pointer disabled:opacity-50"
                     >
-                      {authLoading ? 'Sending...' : 'Send Recovery Link'}
+                      {authLoading ? 'Verifying...' : 'Verify Email'}
                     </button>
                   </form>
 
-                  {/* Simulate recovery button if supabase not configured */}
-                  {!isSupabaseConfigured && authMessage && (
+                  {/* Show "Set New Password" button only after email is verified */}
+                  {authMessage && (
                     <button
                       onClick={() => setAuthView('reset')}
-                      className="py-2 border border-[#F59E0B] text-[#F59E0B] hover:bg-[#F59E0B]/10 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer mt-2"
+                      className="py-2.5 border border-accent-amber text-accent-amber hover:bg-accent-amber/10 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer mt-2"
                     >
-                      [Simulate] Enter Password Reset View
+                      Set New Password →
                     </button>
                   )}
 

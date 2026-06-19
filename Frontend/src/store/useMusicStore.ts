@@ -1,7 +1,11 @@
 import { create } from 'zustand';
-import type { User } from '@supabase/supabase-js';
-// getGenreForArtist removed
 import { extractDominantColors, updateSkinCSSVariables } from '../utils/ColorExtractor';
+
+// Local user type matching backend auth response shape
+export interface AudioDripUser {
+  id: string;
+  email: string;
+}
 
 export interface Track {
   id: string;
@@ -125,7 +129,7 @@ export interface Playlist {
 
 interface MusicState {
   // Auth
-  user: User | null;
+  user: AudioDripUser | null;
   authLoading: boolean;
   authError: string | null;
   showAuthModal: boolean;
@@ -774,11 +778,12 @@ export const useMusicStore = create<MusicState>((set, get) => {
           body: JSON.stringify({ email, password })
         });
         const data = await response.json();
-        if (data.error) {
-          set({ authError: data.error, authLoading: false });
+        if (!response.ok || data.error) {
+          set({ authError: data.error || 'Sign up failed', authLoading: false });
         } else {
-          localStorage.setItem('audiodrip_mock_user', JSON.stringify(data.user));
-          set({ user: data.user as unknown as User, authLoading: false, showAuthModal: false });
+          const user: AudioDripUser = { id: data.user.id, email: data.user.email };
+          localStorage.setItem('audiodrip_user', JSON.stringify(user));
+          set({ user, authLoading: false, showAuthModal: false, authMessage: 'Account created successfully!' });
           // Fetch authenticated user's content
           await get().fetchLikedSongs();
           await get().fetchPlaylists();
@@ -800,11 +805,12 @@ export const useMusicStore = create<MusicState>((set, get) => {
           body: JSON.stringify({ email, password })
         });
         const data = await response.json();
-        if (data.error) {
-          set({ authError: data.error, authLoading: false });
+        if (!response.ok || data.error) {
+          set({ authError: data.error || 'Invalid email or password', authLoading: false });
         } else {
-          localStorage.setItem('audiodrip_mock_user', JSON.stringify(data.user));
-          set({ user: data.user as unknown as User, authLoading: false, showAuthModal: false });
+          const user: AudioDripUser = { id: data.user.id, email: data.user.email };
+          localStorage.setItem('audiodrip_user', JSON.stringify(user));
+          set({ user, authLoading: false, showAuthModal: false });
           // Fetch authenticated user's content
           await get().fetchLikedSongs();
           await get().fetchPlaylists();
@@ -819,7 +825,8 @@ export const useMusicStore = create<MusicState>((set, get) => {
 
     signOut: async () => {
       set({ authLoading: true, authError: null, authMessage: null });
-      localStorage.removeItem('audiodrip_mock_user');
+      localStorage.removeItem('audiodrip_user');
+      localStorage.removeItem('audiodrip_mock_user'); // clean up legacy key
       set({ user: null, authLoading: false });
       // Reload public lists
       await get().fetchLikedSongs();
@@ -839,10 +846,14 @@ export const useMusicStore = create<MusicState>((set, get) => {
       }
 
       if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem('audiodrip_mock_user');
+        // Try the new key first, then fall back to legacy key
+        const stored = localStorage.getItem('audiodrip_user') || localStorage.getItem('audiodrip_mock_user');
         if (stored) {
           try {
-            set({ user: JSON.parse(stored) });
+            const parsed = JSON.parse(stored);
+            if (parsed && parsed.email) {
+              set({ user: { id: parsed.id || '', email: parsed.email } });
+            }
           } catch {
             // Ignore parse errors
           }
@@ -851,24 +862,71 @@ export const useMusicStore = create<MusicState>((set, get) => {
     },
 
     sendPasswordResetEmail: async (email) => {
-      console.log(`sendPasswordResetEmail simulation: ${email}`);
+      if (!email.trim()) {
+        set({ authError: 'Please enter your email address', authLoading: false });
+        return;
+      }
       set({ authLoading: true, authError: null, authMessage: null });
-      await new Promise(resolve => setTimeout(resolve, 600));
-      set({ 
-        authMessage: 'Mock reset email sent! Click the button below to simulate password reset.', 
-        authLoading: false 
-      });
+      try {
+        // Verify the email exists by calling health — store the email for later reset
+        const response = await fetch('/api/mobile/signin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email.trim().toLowerCase(), password: '__reset_check__' })
+        });
+        const data = await response.json();
+        // "Invalid email or password" means the user exists (correct error), 
+        // anything else (e.g. network error) is a real failure
+        if (data.error && data.error.includes('account')) {
+          set({ authError: 'No account found with that email address.', authLoading: false });
+          return;
+        }
+        // User exists — store email for password reset step
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('audiodrip_reset_email', email.trim().toLowerCase());
+        }
+        set({
+          authMessage: 'Email verified! Click the button below to enter your new password.',
+          authLoading: false
+        });
+      } catch {
+        set({ authError: 'Could not reach server. Please try again.', authLoading: false });
+      }
     },
 
     updatePassword: async (password) => {
-      console.log(`updatePassword simulation (len: ${password.length})`);
+      if (!password || password.length < 6) {
+        set({ authError: 'Password must be at least 6 characters.', authLoading: false });
+        return;
+      }
       set({ authLoading: true, authError: null, authMessage: null });
-      await new Promise(resolve => setTimeout(resolve, 600));
-      set({ 
-        authMessage: 'Password updated successfully (Mock)! Please sign in.', 
-        authLoading: false, 
-        authView: 'signin' 
-      });
+      const resetEmail = typeof window !== 'undefined' ? sessionStorage.getItem('audiodrip_reset_email') : null;
+      if (!resetEmail) {
+        set({ authError: 'Session expired. Please restart the password reset flow.', authLoading: false });
+        return;
+      }
+      try {
+        const response = await fetch('/api/mobile/update_password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: resetEmail, new_password: password })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+          set({ authError: data.error || 'Password update failed.', authLoading: false });
+        } else {
+          if (typeof window !== 'undefined') {
+            sessionStorage.removeItem('audiodrip_reset_email');
+          }
+          set({
+            authMessage: 'Password updated! Please sign in with your new password.',
+            authLoading: false,
+            authView: 'signin'
+          });
+        }
+      } catch {
+        set({ authError: 'Could not reach server. Please try again.', authLoading: false });
+      }
     },
 
     toggleTheme: () => {

@@ -531,6 +531,33 @@ def mobile_health():
     return JSONResponse({"status": "ok", "server": "AudioDrip", "version": "3.0", "timestamp": int(time.time())})
 
 
+class PasswordResetRequest(BaseModel):
+    email: str
+    new_password: str
+
+
+@app.post("/api/mobile/update_password")
+def update_password(req: PasswordResetRequest):
+    """Reset the password for a user identified by email."""
+    email = req.email.strip().lower()
+    new_password = req.new_password
+    if not email or not new_password or len(new_password) < 6:
+        return JSONResponse({"error": "Email and a password of at least 6 characters are required"}, status_code=400)
+
+    import hashlib
+    hashed_password = hashlib.sha256(new_password.encode('utf-8')).hexdigest()
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT 1 FROM users WHERE email = %s;", (email,))
+            if not cursor.fetchone():
+                return JSONResponse({"error": "No account found with that email"}, status_code=404)
+            cursor.execute("UPDATE users SET password = %s WHERE email = %s;", (hashed_password, email))
+            return JSONResponse({"status": "success", "message": "Password updated successfully"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+
 @app.get("/api/mobile/liked")
 def get_liked_songs(user_id: str = "anonymous"):
     try:

@@ -1,13 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, X, User, Disc } from 'lucide-react';
-import { getGenreForArtist } from '../data/genreMap';
+import { Search, X, User, Disc, Loader2 } from 'lucide-react';
 import type { Track } from '../store/useMusicStore';
+import { songToTrack, useMusicStore } from '../store/useMusicStore';
+import type { Song } from '../store/useMusicStore';
 
 interface SpotlightSearchProps {
   isOpen: boolean;
   onClose: () => void;
-  tracks: Track[]; // initial backup tracks
+  tracks: Track[]; // initial backup tracks (seed)
   onPlay: (track: Track) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
@@ -16,6 +17,7 @@ interface SpotlightSearchProps {
 export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
   isOpen,
   onClose,
+  tracks,
   onPlay,
   searchQuery,
   onSearchChange,
@@ -26,11 +28,18 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
   const modalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Debounced live Deezer search
+  // Play from search: seed the queue with current search results first
+  const handlePlayFromSearch = useCallback((track: Track) => {
+    if (results.length > 0) {
+      useMusicStore.setState({ queue: results });
+    }
+    onPlay(track);
+  }, [results, onPlay]);
+
+  // Debounced search using the backend /api/mobile/search endpoint
   useEffect(() => {
     if (!isOpen) return;
     if (!searchQuery.trim()) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setResults([]);
       setIsSearching(false);
       return;
@@ -39,35 +48,32 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
     setIsSearching(true);
     const delayDebounceFn = setTimeout(async () => {
       try {
-        const targetUrl = `https://api.deezer.com/search?q=${encodeURIComponent(searchQuery)}&limit=15`;
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
-        const response = await fetch(proxyUrl);
+        const response = await fetch(`/api/mobile/search?q=${encodeURIComponent(searchQuery)}`);
         const data = await response.json();
-        
-        if (data && data.data) {
-          const mapped: Track[] = data.data.map((item: { id: number; title: string; artist?: { name: string }; album?: { title: string; cover_xl: string }; duration: number; preview: string }) => ({
-            id: String(item.id),
-            title: item.title || "Unknown Track",
-            artist: item.artist?.name || "Unknown Artist",
-            album: item.album?.title || "Single",
-            duration: item.duration || 180,
-            genre: getGenreForArtist(item.artist?.name || ""),
-            coverUrl: item.album?.cover_xl || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600",
-            audioUrl: item.preview || "",
-            playCount: 5000,
-            isLiked: false
-          }));
+
+        if (Array.isArray(data)) {
+          const mapped: Track[] = data.map((song: Song) => songToTrack(song));
           setResults(mapped);
+        } else {
+          setResults([]);
         }
       } catch (err) {
-        console.error("Deezer search error:", err);
+        console.error("Search error:", err);
+        // Fallback: filter local seed tracks
+        const q = searchQuery.toLowerCase();
+        const filtered = tracks.filter(t =>
+          t.title.toLowerCase().includes(q) ||
+          t.artist.toLowerCase().includes(q) ||
+          t.genre.toLowerCase().includes(q)
+        );
+        setResults(filtered);
       } finally {
         setIsSearching(false);
       }
     }, 300);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchQuery, isOpen]);
+  }, [searchQuery, isOpen, tracks]);
 
   // Grouped metadata matching
   const matchedTracks = results;
@@ -100,7 +106,6 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
 
   // Reset indices on query updates
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setActiveIndex(0);
   }, [searchQuery]);
 
@@ -108,10 +113,17 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
   useEffect(() => {
     if (isOpen) {
       setTimeout(() => inputRef.current?.focus(), 100);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setActiveIndex(0);
+    } else {
+      // Clear results when closing
+      setResults([]);
     }
   }, [isOpen]);
+
+  // Handle input change locally to allow typing without lag
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    onSearchChange(e.target.value);
+  }, [onSearchChange]);
 
   // Keyboard navigation listeners
   useEffect(() => {
@@ -129,7 +141,7 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
         if (flatItems.length > 0 && flatItems[activeIndex]) {
           const selected = flatItems[activeIndex];
           if (selected.type === 'track') {
-            onPlay(selected.data);
+            handlePlayFromSearch(selected.data);
             onClose();
           } else {
             onSearchChange(selected.type === 'artist' ? selected.data.name : selected.data.title);
@@ -143,7 +155,7 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, flatItems, activeIndex, onClose, onPlay, onSearchChange]);
+  }, [isOpen, flatItems, activeIndex, onClose, handlePlayFromSearch, onSearchChange]);
 
   const listContainerVariants = {
     hidden: { opacity: 0 },
@@ -183,14 +195,14 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
                 ref={inputRef}
                 type="text"
                 value={searchQuery}
-                onChange={(e) => onSearchChange(e.target.value)}
-                placeholder="Search Deezer library..."
+                onChange={handleInputChange}
+                placeholder="Search songs, artists, albums..."
                 className="flex-1 bg-transparent border-b border-border-subtle/50 focus:border-[#F59E0B] focus:outline-none text-txt-primary placeholder-text-muted text-sm font-semibold py-1 transition-colors shadow-none outline-none"
               />
               
               {/* Spinner: single rotating ring while loading */}
               {isSearching && (
-                <div className="w-5 h-5 border-2 border-[#F59E0B] border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                <Loader2 className="w-5 h-5 text-accent-amber animate-spin flex-shrink-0" />
               )}
               
               <button 
@@ -205,7 +217,11 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
             <div className="max-h-96 overflow-y-auto p-4 custom-scrollbar flex flex-col gap-5">
               {flatItems.length === 0 ? (
                 <div className="py-8 text-center text-txt-muted text-xs font-medium">
-                  {searchQuery ? "No live search results found." : "Type a song, artist, or genre to explore global hits..."}
+                  {isSearching 
+                    ? "Searching..." 
+                    : searchQuery 
+                      ? "No results found. Try a different search term." 
+                      : "Type a song, artist, or genre to search..."}
                 </div>
               ) : (
                 <motion.div
@@ -229,13 +245,13 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
                               key={track.id}
                               variants={itemVariants}
                               onClick={() => {
-                                onPlay(track);
+                                handlePlayFromSearch(track);
                                 onClose();
                               }}
                               className={`flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors duration-150 ${
                                 isHighlighted 
-                                  ? 'border-l-2 border-[#F59E0B] text-txt-primary' 
-                                  : 'border-l-2 border-transparent hover:text-txt-primary text-txt-secondary'
+                                  ? 'border-l-2 border-[#F59E0B] text-txt-primary bg-bg-tertiary/40' 
+                                  : 'border-l-2 border-transparent hover:text-txt-primary hover:bg-bg-tertiary/20 text-txt-secondary'
                               }`}
                             >
                               <div className="w-8 h-8 rounded bg-[#181615] overflow-hidden flex-shrink-0">
@@ -246,7 +262,7 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
                                 <p className="text-[10px] font-medium truncate text-txt-muted">{track.artist}</p>
                               </div>
                               <span className="text-[10px] font-bold text-txt-muted">
-                                {Math.floor(track.duration / 60)}:{(track.duration % 60).toString().padStart(2, '0')}
+                                {track.duration > 0 ? `${Math.floor(track.duration / 60)}:${(track.duration % 60).toString().padStart(2, '0')}` : ''}
                               </span>
                             </motion.div>
                           );
@@ -272,8 +288,8 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
                               onClick={() => onSearchChange(artist.name)}
                               className={`flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors duration-150 ${
                                 isHighlighted 
-                                  ? 'border-l-2 border-[#F59E0B] text-txt-primary' 
-                                  : 'border-l-2 border-transparent hover:text-txt-primary text-txt-secondary'
+                                  ? 'border-l-2 border-[#F59E0B] text-txt-primary bg-bg-tertiary/40' 
+                                  : 'border-l-2 border-transparent hover:text-txt-primary hover:bg-bg-tertiary/20 text-txt-secondary'
                               }`}
                             >
                               <div className="w-8 h-8 rounded-full bg-[#181615] flex items-center justify-center flex-shrink-0 border border-border-subtle">
@@ -307,8 +323,8 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
                               onClick={() => onSearchChange(album.title)}
                               className={`flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors duration-150 ${
                                 isHighlighted 
-                                  ? 'border-l-2 border-[#F59E0B] text-txt-primary' 
-                                  : 'border-l-2 border-transparent hover:text-txt-primary text-txt-secondary'
+                                  ? 'border-l-2 border-[#F59E0B] text-txt-primary bg-bg-tertiary/40' 
+                                  : 'border-l-2 border-transparent hover:text-txt-primary hover:bg-bg-tertiary/20 text-txt-secondary'
                               }`}
                             >
                               <div className="w-8 h-8 rounded bg-[#181615] overflow-hidden flex-shrink-0 border border-border-subtle">
