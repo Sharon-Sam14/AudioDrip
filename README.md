@@ -143,3 +143,38 @@ npm run build
 | `users` | Email/password user accounts |
 | `user_interactions` | Interaction scoring for recommendations |
 | `system_settings` | Server state (e.g. last decay timestamp) |
+
+---
+
+## 🌐 Cloud Deployment (Free Tier Setup)
+
+This project is configured to deploy fully for free using **Supabase** (for the database) and **Render** (for the unified backend & frontend server). 
+
+### 1. Database Setup (Supabase)
+1. Sign up for a free account at [Supabase](https://supabase.com).
+2. Create a new project (e.g., `AudioDrip`) and set a secure database password.
+3. Once the database finishes provisioning, navigate to **Project Settings** -> **Database**.
+4. Scroll down to the **Connection string** section, select **URI**, and copy the string.
+   - It will look similar to: `postgresql://postgres.[YOUR-PROJECT-REF]:[YOUR-PASSWORD]@aws-0-us-east-1.pooler.supabase.com:5432/postgres`
+   - *Note: Replace `[YOUR-PASSWORD]` with the database password you chose.*
+
+### 2. Application Deployment (Render)
+1. Sign up for a free account at [Render](https://render.com).
+2. Click **New +** and select **Web Service**.
+3. Connect your GitHub repository (`Sharon-Sam14/AudioDrip`).
+4. Configure the following settings:
+   - **Name**: `audiodrip`
+   - **Language**: `Python`
+   - **Branch**: `main`
+   - **Root Directory**: `Server` *(Important: Render must search within the Server subdirectory)*
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python init_db.py && python app.py` *(This automatically configures the database schema on Supabase, migrates initial data, and boots the FastAPI server)*
+5. Expand the **Environment Variables** section and add:
+   - `DATABASE_URL`: *The Supabase Connection String you copied in Step 1.*
+   - `GROQ_API_KEY`: *(Optional) Your Groq API key for AI playlists.*
+6. Click **Deploy Web Service**.
+
+> [!NOTE]
+> - **Unified Deployment (No Vercel Needed)**: The React frontend has been compiled into the `Server/static` directory, which is served directly by the FastAPI backend on the `/` route. This avoids CORS cross-origin configuration issues and keeps hosting 100% free!
+> - **Free Tier Cold Starts**: Render's free tier spins down after 15 minutes of inactivity. When visiting the site after a period of inactivity, it can take 30-50 seconds to spin back up.
+> - **Ephemeral Storage**: Files downloaded to `song_cache/` are stored on Render's ephemeral disk. They will be reset whenever the service restarts or is redeployed. Cached songs will play normally and download on-demand.

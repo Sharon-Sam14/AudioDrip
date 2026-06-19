@@ -300,16 +300,20 @@ def migrate_data(conn):
 
 def main():
     try:
-        create_database()
-        
-        # Connect to newly created/existing audiodrip db
-        conn = psycopg2.connect(
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT,
-            dbname=DB_NAME
-        )
+        database_url = os.getenv("DATABASE_URL")
+        if database_url:
+            print("Connecting to database using DATABASE_URL...")
+            conn = psycopg2.connect(database_url)
+        else:
+            create_database()
+            # Connect to newly created/existing audiodrip db
+            conn = psycopg2.connect(
+                user=DB_USER,
+                password=DB_PASSWORD,
+                host=DB_HOST,
+                port=DB_PORT,
+                dbname=DB_NAME
+            )
         
         setup_schema(conn)
         migrate_data(conn)
