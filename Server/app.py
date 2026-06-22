@@ -384,6 +384,13 @@ def enrich_catalog_for_song(song_id):
         clean_genre = genre.strip()
         search_terms.append(f"{clean_genre} songs")
         
+    # Detect language from metadata and search it to seed the DB
+    text_to_scan = f"{song.get('title', '')} {song.get('artist', '')} {song.get('album', '')} {song.get('genre', '')}".lower()
+    for lang in ["hindi", "tamil", "telugu", "punjabi", "bengali", "malayalam", "kannada", "marathi", "korean", "spanish", "french", "english"]:
+        if lang in text_to_scan:
+            search_terms.append(f"{lang} songs")
+            break
+            
     search_terms = list(dict.fromkeys(search_terms))
     
     # Pre-fetch matching tracks in parallel to seed catalog for similarity calculations

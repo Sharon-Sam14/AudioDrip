@@ -117,6 +117,13 @@ def get_songs_by_ids(song_ids):
                 ordered_songs.append(songs_by_id[song_id])
         return ordered_songs
 
+def _detect_language(song):
+    text = f"{song.get('title', '')} {song.get('artist', '')} {song.get('album', '')} {song.get('genre', '')}".lower()
+    for lang in ["hindi", "tamil", "telugu", "punjabi", "bengali", "malayalam", "kannada", "marathi", "korean", "spanish", "french", "english"]:
+        if lang in text:
+            return lang
+    return "english"
+
 def _build_feature_matrix(catalog):
     if not catalog:
         return [], []
@@ -125,6 +132,9 @@ def _build_feature_matrix(catalog):
     genres = sorted({song.get("genre", "") or "" for song in catalog})
     artist_index = {artist: idx for idx, artist in enumerate(artists)}
     genre_index = {genre: idx for idx, genre in enumerate(genres)}
+
+    languages = ["hindi", "tamil", "telugu", "punjabi", "bengali", "malayalam", "kannada", "marathi", "korean", "spanish", "french", "english"]
+    lang_index = {lang: idx for idx, lang in enumerate(languages)}
 
     tempos = [song["tempo"] for song in catalog if song.get("tempo") is not None]
     tempo_median = float(statistics.median(tempos)) if tempos else 0.0
@@ -135,9 +145,14 @@ def _build_feature_matrix(catalog):
 
     vectors = []
     for song, tempo_value in zip(catalog, filled_tempos):
-        vector = [0.0] * (len(artists) + len(genres) + 2)
+        vector = [0.0] * (len(artists) + len(genres) + len(languages) + 2)
         vector[artist_index[song.get("artist", "") or ""]] = 1.0
         vector[len(artists) + genre_index[song.get("genre", "") or ""]] = 1.0
+        
+        # Add language vector component
+        song_lang = _detect_language(song)
+        vector[len(artists) + len(genres) + lang_index[song_lang]] = 1.0
+        
         vector[-2] = 0.0 if tempo_range == 0 else (tempo_value - tempo_min) / tempo_range
         vector[-1] = float(song.get("energy") or 0.0)
         vectors.append(vector)
