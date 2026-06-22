@@ -154,6 +154,7 @@ interface MusicState {
   selectedPlaylist: Playlist | null;
   playlistSongs: Song[];
   lyrics: { type: 'synced' | 'plain' | 'error'; text: string } | null;
+  upNextSuggestions: Song[];
 
   // Search & Vibe queries
   searchQuery: string;
@@ -232,6 +233,7 @@ interface MusicState {
   fetchPlaylists: () => Promise<void>;
   fetchPlaylistSongs: (playlistId: number) => Promise<void>;
   fetchLyrics: (track: Track) => Promise<void>;
+  fetchUpNextSuggestions: (songId: string) => Promise<void>;
 
   // Operations
   handleCreatePlaylist: (e?: React.FormEvent) => Promise<void>;
@@ -320,6 +322,7 @@ export const useMusicStore = create<MusicState>((set, get) => {
     selectedPlaylist: null,
     playlistSongs: [],
     lyrics: null,
+    upNextSuggestions: [],
 
     // Searches
     searchQuery: '',
@@ -412,6 +415,9 @@ export const useMusicStore = create<MusicState>((set, get) => {
 
       // Fetch lyrics
       get().fetchLyrics(track);
+      
+      // Fetch up next suggestions (based on artist/genre/embedding)
+      get().fetchUpNextSuggestions(track.id);
     },
 
     pause: () => {
@@ -667,6 +673,18 @@ export const useMusicStore = create<MusicState>((set, get) => {
       } catch (err) {
         console.error('Error fetching lyrics:', err);
         set({ lyrics: { type: 'error', text: 'Lyrics unavailable.' } });
+      }
+    },
+
+    fetchUpNextSuggestions: async (songId) => {
+      try {
+        const response = await fetch(`/api/mobile/up_next?song_id=${encodeURIComponent(songId)}&limit=5`);
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          set({ upNextSuggestions: data });
+        }
+      } catch (err) {
+        console.error("Error fetching suggestions:", err);
       }
     },
 
