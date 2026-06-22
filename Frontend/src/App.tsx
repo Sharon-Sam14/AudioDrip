@@ -134,6 +134,7 @@ export default function App() {
     selectedPlaylist,
     playlistSongs,
     lyrics,
+    upNextSuggestions,
     
     // Modals
     showCreateModal,
@@ -324,33 +325,8 @@ export default function App() {
   // Determine current active track details
   const activeTrackObj = currentTrack || (seedTracks.find((t: Track) => t.id === useMusicStore.getState().currentTrack?.id)) || null;
 
-  // Similar tracks: same artist OR same genre, excluding the current track
-  const allKnownTracks = [
-    ...sortedChartTracks,
-    ...mappedLibraryTracks,
-    ...mappedLikedTracks,
-  ];
-  const uniqueTrackIds = new Set<string>();
-  const deduplicatedTracks = allKnownTracks.filter(t => {
-    if (uniqueTrackIds.has(t.id)) return false;
-    uniqueTrackIds.add(t.id);
-    return true;
-  });
-  const similarTracks = activeTrackObj
-    ? deduplicatedTracks.filter(t => {
-        if (t.id === activeTrackObj.id) return false;
-        const sameArtist = t.artist.toLowerCase() === activeTrackObj.artist.toLowerCase();
-        const tg = (t.genre || '').toLowerCase();
-        const ag = (activeTrackObj.genre || '').toLowerCase();
-        let sameGenre = false;
-        if (tg && ag) {
-          const tGenres = tg.split('/').map(g => g.trim());
-          const aGenres = ag.split('/').map(g => g.trim());
-          sameGenre = tGenres.some(g => aGenres.includes(g));
-        }
-        return sameArtist || sameGenre;
-      }).slice(0, 15)
-    : [];
+
+  const similarTracks = upNextSuggestions.map(songToTrack);
 
   // Identify highest played track for the Hero Banner
   const heroTrack = seedTracks.reduce((max: Track, track: Track) => track.playCount > max.playCount ? track : max, seedTracks[0]);
