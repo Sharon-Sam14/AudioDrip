@@ -148,6 +148,16 @@ def setup_schema(conn):
             );
         """)
 
+        # 9. User Preferences Table (languages + genres)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id VARCHAR(255) PRIMARY KEY,
+                languages TEXT[] DEFAULT '{}',
+                genres TEXT[] DEFAULT '{}',
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
         # 8. Cosine Similarity PL/pgSQL Function
         cursor.execute("""
             CREATE OR REPLACE FUNCTION cosine_similarity(a DOUBLE PRECISION[], b DOUBLE PRECISION[])

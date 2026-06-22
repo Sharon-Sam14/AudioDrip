@@ -2,11 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { 
   Play, Pause, SkipForward, SkipBack, Search, Music, 
   Library, Trash2, FolderPlus, X, Settings, 
-  Grid, List, User2, Loader2, Sparkles, Download, Check, Heart
+  Grid, List, User2, Loader2, Sparkles, Download, Check, Heart,
+  Sliders, Globe, Repeat
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMusicStore, seedTracks, trackToSong, songToTrack, getGlobalAudioElement } from './store/useMusicStore';
-import type { Track } from './store/useMusicStore';
+import type { Track, UserPreferences } from './store/useMusicStore';
 
 // Custom components
 import { ParticleField } from './components/ParticleField';
@@ -26,6 +27,59 @@ const VIBES = [
   { id: 'midnight', name: '🌌 Midnight', genres: ['synthwave', 'soul', 'jazz', 'r&b', 'indie', 'ghazal', 'sufi', 'slow', 'night', 'romantic', 'love', 'alternative'] },
   { id: 'workout', name: '🧗 Workout', genres: ['workout', 'hip-hop', 'rap', 'electronic', 'dance', 'punjabi', 'energetic', 'gym', 'bhangra', 'fast', 'rock'] }
 ];
+
+// Preference options
+const PREF_LANGUAGES = [
+  { id: 'Hindi', label: '🇮🇳 Hindi', keywords: ['hindi', 'bollywood', 'bhojpuri', 'rajasthani'] },
+  { id: 'Tamil', label: '🎵 Tamil', keywords: ['tamil'] },
+  { id: 'Telugu', label: '🎵 Telugu', keywords: ['telugu'] },
+  { id: 'Punjabi', label: '🥁 Punjabi', keywords: ['punjabi', 'bhangra'] },
+  { id: 'Bengali', label: '🎵 Bengali', keywords: ['bengali', 'bangla'] },
+  { id: 'Malayalam', label: '🎵 Malayalam', keywords: ['malayalam'] },
+  { id: 'Kannada', label: '🎵 Kannada', keywords: ['kannada'] },
+  { id: 'Marathi', label: '🎵 Marathi', keywords: ['marathi'] },
+  { id: 'English', label: '🌍 English', keywords: ['english', 'pop', 'rock', 'jazz', 'soul', 'electronic'] },
+  { id: 'Korean', label: '🇰🇷 Korean', keywords: ['kpop', 'korean'] },
+  { id: 'Spanish', label: '🇪🇸 Spanish', keywords: ['spanish', 'latin', 'reggaeton'] },
+  { id: 'French', label: '🇫🇷 French', keywords: ['french'] },
+];
+
+const PREF_GENRES = [
+  { id: 'Party', label: '🎉 Party', keywords: ['party', 'dance', 'club', 'edm'] },
+  { id: 'Devotional', label: '🙏 Devotional', keywords: ['devotional', 'bhakti', 'spiritual', 'bhajans', 'mantra'] },
+  { id: 'Chill', label: '🌿 Chill', keywords: ['chill', 'lofi', 'lo-fi', 'ambient', 'acoustic'] },
+  { id: 'Romantic', label: '💕 Romantic', keywords: ['romantic', 'love', 'soul', 'r&b'] },
+  { id: 'Hip-Hop', label: '🎤 Hip-Hop', keywords: ['hip-hop', 'rap', 'trap'] },
+  { id: 'Rock', label: '🎸 Rock', keywords: ['rock', 'metal', 'punk'] },
+  { id: 'Classical', label: '🎻 Classical', keywords: ['classical', 'instrumental', 'orchestral', 'piano'] },
+  { id: 'Jazz', label: '🎷 Jazz', keywords: ['jazz', 'blues', 'swing'] },
+  { id: 'Pop', label: '🎵 Pop', keywords: ['pop', 'indie', 'alternative'] },
+  { id: 'Workout', label: '💪 Workout', keywords: ['workout', 'gym', 'energetic', 'fitness'] },
+  { id: 'Sufi', label: '🌙 Sufi', keywords: ['sufi', 'ghazal', 'qawwali'] },
+  { id: 'Retro', label: '📼 Retro', keywords: ['retro', 'classic', 'oldies', 'vintage', '80s', '90s'] },
+];
+
+// Preference-based scoring: returns 0-100, higher = better match
+const scoreTrackByPrefs = (track: Track, prefs: UserPreferences): number => {
+  if (!prefs.languages.length && !prefs.genres.length) return 0;
+  const g = (track.genre || '').toLowerCase();
+  const t = (track.title || '').toLowerCase();
+  const a = (track.artist || '').toLowerCase();
+  let score = 0;
+  for (const lang of prefs.languages) {
+    const langDef = PREF_LANGUAGES.find(l => l.id === lang);
+    if (langDef && langDef.keywords.some(kw => g.includes(kw) || t.includes(kw) || a.includes(kw))) {
+      score += 50;
+    }
+  }
+  for (const genre of prefs.genres) {
+    const genreDef = PREF_GENRES.find(gd => gd.id === genre);
+    if (genreDef && genreDef.keywords.some(kw => g.includes(kw) || t.includes(kw))) {
+      score += 50;
+    }
+  }
+  return score;
+};
 
 // -------------------------------------------------------------
 // SKELETON SCREENS
@@ -111,6 +165,7 @@ export default function App() {
     setNewPlaylistName,
     setShowCreateModal,
     setShowAddModal,
+    setSongToAddToPlaylist,
     setSearchQuery,
     setSelectedVibe,
     
@@ -156,7 +211,17 @@ export default function App() {
     setVisualizerMode,
     toggleBooth,
     toggleSidebar,
-    setViewMode
+    setViewMode,
+
+    // Preferences
+    userPreferences,
+    showPrefsModal,
+    savePreferences,
+    setShowPrefsModal,
+
+    // Repeat Mode
+    repeatMode,
+    toggleRepeat,
   } = useMusicStore();
 
   const [authEmail, setAuthEmail] = useState('');
@@ -170,12 +235,20 @@ export default function App() {
   // Skeleton loading state
   const [isLoading, setIsLoading] = useState(true);
 
-  // DB health status
-  const [dbStatus, setDbStatus] = useState<'checking' | 'ok' | 'error'>('checking');
+  // Local preference editor state (inside the modal)
+  const [prefLangs, setPrefLangs] = useState<string[]>([]);
+  const [prefGenres, setPrefGenres] = useState<string[]>([]);
+  const [prefSaving, setPrefSaving] = useState(false);
 
   // Wrapper to adapt cacheSong (1-arg) to TrackCard onCache (2-arg) signature
   const handleCache = (track: import('./store/useMusicStore').Track, _e?: React.MouseEvent) => {
     cacheSong(track);
+  };
+
+  const handleAddToPlaylist = (track: Track, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSongToAddToPlaylist(trackToSong(track));
+    setShowAddModal(true);
   };
 
 
@@ -191,11 +264,6 @@ export default function App() {
     const timer = setTimeout(() => {
       setIsLoading(false);
     }, 1200);
-
-    // Check DB health
-    fetch('/api/mobile/health')
-      .then(r => r.ok ? setDbStatus('ok') : setDbStatus('error'))
-      .catch(() => setDbStatus('error'));
 
     return () => clearTimeout(timer);
   }, [initAuth, fetchChart, fetchLibrary, fetchLikedSongs, fetchPlaylists]);
@@ -220,6 +288,14 @@ export default function App() {
     }
   }, [selectedPlaylist, fetchPlaylistSongs]);
 
+  // Pre-fill local preference state when either prefs modal or settings modal opens
+  useEffect(() => {
+    if (showPrefsModal || showSettingsModal) {
+      setPrefLangs([...userPreferences.languages]);
+      setPrefGenres([...userPreferences.genres]);
+    }
+  }, [showPrefsModal, showSettingsModal, userPreferences]);
+
   // Vibe Filter implementation
   const filterSongsByVibe = (list: Track[]) => {
     if (!selectedVibe || selectedVibe === 'all') return list;
@@ -234,15 +310,50 @@ export default function App() {
 
   // Maps backend song lists to track types
   const mappedChartTracks = filterSongsByVibe(chartSongs.map(songToTrack));
+
+  // Apply preference-based sort: preference-matching songs bubble to top
+  const sortedChartTracks = [...mappedChartTracks].sort((a, b) => {
+    const sa = scoreTrackByPrefs(a, userPreferences);
+    const sb = scoreTrackByPrefs(b, userPreferences);
+    return sb - sa; // descending score
+  });
   const mappedLikedTracks = likedSongs.map(songToTrack);
   const mappedLibraryTracks = librarySongs.map(songToTrack);
   const mappedPlaylistTracks = playlistSongs.map(songToTrack);
 
-  // Identify highest played track for the Hero Banner
-  const heroTrack = seedTracks.reduce((max: Track, track: Track) => track.playCount > max.playCount ? track : max, seedTracks[0]);
-
   // Determine current active track details
   const activeTrackObj = currentTrack || (seedTracks.find((t: Track) => t.id === useMusicStore.getState().currentTrack?.id)) || null;
+
+  // Similar tracks: same artist OR same genre, excluding the current track
+  const allKnownTracks = [
+    ...sortedChartTracks,
+    ...mappedLibraryTracks,
+    ...mappedLikedTracks,
+  ];
+  const uniqueTrackIds = new Set<string>();
+  const deduplicatedTracks = allKnownTracks.filter(t => {
+    if (uniqueTrackIds.has(t.id)) return false;
+    uniqueTrackIds.add(t.id);
+    return true;
+  });
+  const similarTracks = activeTrackObj
+    ? deduplicatedTracks.filter(t => {
+        if (t.id === activeTrackObj.id) return false;
+        const sameArtist = t.artist.toLowerCase() === activeTrackObj.artist.toLowerCase();
+        const tg = (t.genre || '').toLowerCase();
+        const ag = (activeTrackObj.genre || '').toLowerCase();
+        let sameGenre = false;
+        if (tg && ag) {
+          const tGenres = tg.split('/').map(g => g.trim());
+          const aGenres = ag.split('/').map(g => g.trim());
+          sameGenre = tGenres.some(g => aGenres.includes(g));
+        }
+        return sameArtist || sameGenre;
+      }).slice(0, 15)
+    : [];
+
+  // Identify highest played track for the Hero Banner
+  const heroTrack = seedTracks.reduce((max: Track, track: Track) => track.playCount > max.playCount ? track : max, seedTracks[0]);
 
   // Reduced motion support state
   const [shouldReduceMotion, setShouldReduceMotion] = useState(() =>
@@ -647,7 +758,7 @@ export default function App() {
                           animate="visible"
                           className="grid grid-cols-2 md:grid-cols-4 gap-6"
                         >
-                          {mappedChartTracks.map((track) => (
+                          {sortedChartTracks.map((track) => (
                             <TrackCard
                               key={track.id}
                               track={track}
@@ -656,6 +767,7 @@ export default function App() {
                               onPlay={play}
                               onToggleLike={onToggleLike}
                               onCache={handleCache}
+                              onAddToPlaylist={handleAddToPlaylist}
                             />
                           ))}
                         </motion.div>
@@ -674,7 +786,7 @@ export default function App() {
                           animate="visible"
                           className="flex flex-col gap-2 bg-bg-secondary border border-border-subtle rounded-2xl p-4"
                         >
-                          {mappedChartTracks.map((track, i) => {
+                          {sortedChartTracks.map((track, i) => {
                             const isCurrent = activeTrackObj?.id === track.id;
                             return (
                               <motion.div
@@ -729,6 +841,19 @@ export default function App() {
                                     title={track.isLiked ? "Unlike" : "Like"}
                                   >
                                     <Heart className={`w-3.5 h-3.5 ${track.isLiked ? 'fill-[#E11D72] text-[#E11D72]' : ''}`} />
+                                  </button>
+
+                                  {/* Add to Playlist button */}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSongToAddToPlaylist(trackToSong(track));
+                                      setShowAddModal(true);
+                                    }}
+                                    className="p-1.5 rounded-lg text-txt-muted hover:text-accent-amber hover:bg-bg-tertiary/60 transition-colors cursor-pointer"
+                                    title="Add to Playlist"
+                                  >
+                                    <FolderPlus className="w-3.5 h-3.5" />
                                   </button>
 
                                   <span className="text-xs font-semibold text-txt-muted pr-2">
@@ -926,6 +1051,7 @@ export default function App() {
                                 onPlay={play}
                                 onToggleLike={onToggleLike}
                                 onCache={handleCache}
+                                onAddToPlaylist={handleAddToPlaylist}
                               />
                             ))
                           )}
@@ -949,6 +1075,7 @@ export default function App() {
                                 onPlay={play}
                                 onToggleLike={onToggleLike}
                                 onCache={handleCache}
+                                onAddToPlaylist={handleAddToPlaylist}
                               />
                             ))
                           )}
@@ -1055,7 +1182,7 @@ export default function App() {
         <aside
           className="w-full bg-bg-secondary border-l border-border-subtle flex flex-col justify-between h-screen overflow-hidden z-20 relative"
         >
-          <div className="w-[320px] h-full flex flex-col justify-between py-8 px-6 overflow-hidden">
+          <div className="w-[320px] h-full flex flex-col py-6 px-6 overflow-y-auto custom-scrollbar gap-0">
             {/* Close panel toggle button */}
             <button
               onClick={toggleBooth}
@@ -1067,7 +1194,7 @@ export default function App() {
             {activeTrackObj && (
               <>
                 {/* Top: Vinyl Album rotating with shared transition layoutId */}
-                <div className="flex flex-col items-center mt-6">
+                <div className="flex flex-col items-center mt-6 flex-shrink-0">
                   <VinylRecord
                     coverUrl={activeTrackObj.coverUrl}
                     isPlaying={isPlaying}
@@ -1081,10 +1208,46 @@ export default function App() {
                   <p className="text-xs font-semibold text-txt-secondary mt-1 text-center line-clamp-1 w-full px-2">
                     {activeTrackObj.artist}
                   </p>
+
+                  {/* Like + Add to Playlist actions */}
+                  <div className="flex items-center gap-3 mt-4">
+                    {/* Like Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const song = trackToSong(activeTrackObj);
+                        handleToggleLike(song, e);
+                      }}
+                      title={activeTrackObj.isLiked ? 'Unlike' : 'Like'}
+                      className={`flex items-center gap-1.5 px-3 py-2 rounded-full border text-xs font-bold transition-all cursor-pointer ${
+                        activeTrackObj.isLiked
+                          ? 'bg-accent-rose/15 border-accent-rose text-[#E11D72]'
+                          : 'bg-bg-primary border-border-subtle text-txt-muted hover:border-accent-rose hover:text-[#E11D72]'
+                      }`}
+                    >
+                      <Heart className={`w-3.5 h-3.5 transition-all ${activeTrackObj.isLiked ? 'fill-[#E11D72]' : ''}`} />
+                      <span>{activeTrackObj.isLiked ? 'Liked' : 'Like'}</span>
+                    </button>
+
+                    {/* Add to Playlist Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSongToAddToPlaylist(trackToSong(activeTrackObj));
+                        fetchPlaylists();
+                        setShowAddModal(true);
+                      }}
+                      title="Add to Playlist"
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-full border border-border-subtle bg-bg-primary text-txt-muted hover:border-accent-amber hover:text-accent-amber text-xs font-bold transition-all cursor-pointer"
+                    >
+                      <FolderPlus className="w-3.5 h-3.5" />
+                      <span>Playlist</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Middle: Waveform scrubber seeker */}
-                <div className="my-6">
+                <div className="my-6 flex-shrink-0">
                   {isLoading ? (
                     <ScrubberSkeleton />
                   ) : (
@@ -1129,11 +1292,36 @@ export default function App() {
                     >
                       <SkipForward className="w-4 h-4 fill-current" />
                     </MagneticButton>
+
+                    <MagneticButton
+                      onClick={toggleRepeat}
+                      title={
+                        repeatMode === 'one'
+                          ? 'Repeat: One'
+                          : repeatMode === 'all'
+                          ? 'Repeat: All'
+                          : 'Repeat: Off'
+                      }
+                      className={`p-3 rounded-full hover:bg-bg-tertiary transition-all cursor-pointer relative ${
+                        repeatMode !== 'off' ? 'text-accent-amber font-bold' : 'text-txt-muted hover:text-txt-secondary'
+                      }`}
+                    >
+                      {repeatMode === 'one' ? (
+                        <div className="relative">
+                          <Repeat className="w-4 h-4" />
+                          <span className="absolute -top-1.5 -right-1.5 text-[7px] font-extrabold bg-[#0C0A09] text-accent-amber border border-accent-amber/35 rounded-full w-3 h-3 flex items-center justify-center">
+                            1
+                          </span>
+                        </div>
+                      ) : (
+                        <Repeat className="w-4 h-4" />
+                      )}
+                    </MagneticButton>
                   </div>
                 </div>
 
                 {/* Dynamic canvas visualizer modes switcher */}
-                <div className="h-24 bg-bg-primary rounded-2xl overflow-hidden relative border border-border-subtle/50 flex flex-col justify-end p-2.5">
+                <div className="h-24 flex-shrink-0 bg-bg-primary rounded-2xl overflow-hidden relative border border-border-subtle/50 flex flex-col justify-end p-2.5">
                   <div className="absolute inset-0 z-0">
                     <AudioVisualizer
                       audioElement={getGlobalAudioElement()}
@@ -1159,9 +1347,66 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Bottom: lyrics preview layer */}
-                <div className="h-32 mt-4 overflow-hidden relative border-t border-border-subtle/40 pt-4 flex-shrink-0">
-                  <LyricsScroller lyricsData={lyrics} currentTime={currentTime} />
+                {/* Lyrics Section */}
+                <div className="mt-5 flex-shrink-0">
+                  <div className="flex items-center gap-1.5 mb-2 px-1">
+                    <Music className="w-3.5 h-3.5 text-accent-amber" />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-txt-muted">Lyrics Preview</span>
+                  </div>
+                  <div className="h-32 overflow-hidden relative border border-border-subtle/30 rounded-xl p-3 bg-bg-primary/50">
+                    <LyricsScroller lyricsData={lyrics} currentTime={currentTime} />
+                  </div>
+                </div>
+
+                {/* Up Next / Similar Songs */}
+                <div className="mt-5 flex-shrink-0">
+                  <div className="flex items-center justify-between mb-2 px-1">
+                    <div className="flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-accent-amber" />
+                      <span className="text-[10px] font-black uppercase tracking-widest text-txt-muted">Up Next / Similar</span>
+                    </div>
+                    <span className="text-[9px] font-bold text-txt-muted px-1.5 py-0.5 rounded bg-bg-primary border border-border-subtle/50">
+                      {similarTracks.length} Songs
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5 max-h-[280px] overflow-y-auto custom-scrollbar pr-1">
+                    {similarTracks.length === 0 ? (
+                      <p className="text-center text-txt-muted text-[10px] font-semibold py-6">
+                        No similar tracks found.
+                      </p>
+                    ) : (
+                      similarTracks.map(track => {
+                        const isSameArtist = track.artist.toLowerCase() === activeTrackObj.artist.toLowerCase();
+                        const primaryGenre = track.genre ? track.genre.split('/')[0].trim() : 'Music';
+                        return (
+                          <button
+                            key={track.id}
+                            onClick={() => play(track)}
+                            className="group flex items-center gap-3 px-2.5 py-2 rounded-xl hover:bg-bg-tertiary/60 transition-all cursor-pointer text-left w-full border border-transparent hover:border-border-subtle/40"
+                          >
+                            <div className="w-9 h-9 rounded-lg overflow-hidden flex-shrink-0 border border-border-subtle/40 relative">
+                              <img src={track.coverUrl} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                              <div className="absolute inset-0 bg-[#0C0A09]/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                <Play className="w-3 h-3 text-accent-amber fill-current" />
+                              </div>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[11px] font-bold truncate text-txt-primary">{track.title}</p>
+                              <p className="text-[9px] font-medium truncate text-txt-muted mt-0.5">{track.artist}</p>
+                            </div>
+                            <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded flex-shrink-0 tracking-wider transition-colors ${
+                              isSameArtist 
+                                ? 'bg-accent-amber/10 text-accent-amber border border-accent-amber/20' 
+                                : 'bg-bg-primary text-txt-muted border border-border-subtle/50'
+                            }`}>
+                              {isSameArtist ? 'Artist' : primaryGenre}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               </>
             )}
@@ -1247,6 +1492,32 @@ export default function App() {
                 >
                   <SkipForward className="w-3.5 h-3.5 fill-current" />
                 </button>
+
+                {/* Like button in mini capsule */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleToggleLike(trackToSong(activeTrackObj), e);
+                  }}
+                  title={activeTrackObj.isLiked ? 'Unlike' : 'Like'}
+                  className="p-1.5 transition-colors cursor-pointer"
+                >
+                  <Heart className={`w-3.5 h-3.5 transition-all ${activeTrackObj.isLiked ? 'fill-[#E11D72] text-[#E11D72]' : 'text-txt-muted hover:text-[#E11D72]'}`} />
+                </button>
+
+                {/* Add to Playlist button in mini capsule */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSongToAddToPlaylist(trackToSong(activeTrackObj));
+                    fetchPlaylists();
+                    setShowAddModal(true);
+                  }}
+                  title="Add to Playlist"
+                  className="p-1.5 text-txt-muted hover:text-accent-amber transition-colors cursor-pointer"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
           </motion.div>
@@ -1276,7 +1547,7 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-bg-secondary border border-border-subtle rounded-2xl max-w-md w-full p-6 relative z-10 shadow-2xl"
+              className="bg-bg-secondary border border-border-subtle rounded-2xl max-w-md w-full p-6 relative z-10 shadow-2xl max-h-[88vh] overflow-y-auto custom-scrollbar"
             >
               <button 
                 onClick={() => setShowSettingsModal(false)}
@@ -1288,28 +1559,6 @@ export default function App() {
               <h4 className="font-serif font-black text-xl text-txt-primary border-b border-border-subtle/50 pb-3">Settings Panel</h4>
               
               <div className="flex flex-col gap-5 mt-5 text-left">
-                {/* Database Connectivity Status check */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-bold text-txt-primary">PostgreSQL Status</p>
-                    <p className="text-[10px] text-txt-muted mt-0.5">Database connectivity indicators</p>
-                  </div>
-                  {dbStatus === 'checking' && (
-                    <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-txt-muted bg-bg-tertiary px-2.5 py-1 rounded-full border border-border-subtle">
-                      <span className="w-1.5 h-1.5 rounded-full bg-txt-muted animate-pulse" /> Checking…
-                    </span>
-                  )}
-                  {dbStatus === 'ok' && (
-                    <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-green-400 bg-green-500/10 px-2.5 py-1 rounded-full border border-green-500/20">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" /> Active
-                    </span>
-                  )}
-                  {dbStatus === 'error' && (
-                    <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-red-400 bg-red-500/10 px-2.5 py-1 rounded-full border border-red-500/20">
-                      <span className="w-1.5 h-1.5 rounded-full bg-red-400" /> Offline
-                    </span>
-                  )}
-                </div>
 
                 {/* Default visualizer modes preferences */}
                 <div>
@@ -1332,7 +1581,7 @@ export default function App() {
                 </div>
 
                 {/* Theme preferences */}
-                <div className="flex justify-between items-center pt-2">
+                <div className="flex justify-between items-center pt-1">
                   <div>
                     <p className="text-xs font-bold text-txt-primary">Visual Mode Theme</p>
                     <p className="text-[10px] text-txt-muted mt-0.5">Toggle light session vs obsidian studio</p>
@@ -1344,6 +1593,82 @@ export default function App() {
                     {theme === 'dark' ? 'Daylight' : 'Obsidian'}
                   </button>
                 </div>
+
+                {/* ── LANGUAGE PREFERENCES (inline) ── */}
+                <div className="border-t border-border-subtle/40 pt-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Globe className="w-3.5 h-3.5 text-accent-amber" />
+                    <p className="text-xs font-bold text-txt-primary">Language Preferences</p>
+                  </div>
+                  <p className="text-[10px] text-txt-muted mb-3">Pick languages you enjoy — songs will be sorted to match</p>
+                  <div className="flex flex-wrap gap-2">
+                    {PREF_LANGUAGES.map(lang => {
+                      const active = prefLangs.includes(lang.id);
+                      return (
+                        <button
+                          key={lang.id}
+                          onClick={() => setPrefLangs(prev =>
+                            prev.includes(lang.id) ? prev.filter(l => l !== lang.id) : [...prev, lang.id]
+                          )}
+                          className={`px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all cursor-pointer ${
+                            active
+                              ? 'bg-accent-amber border-accent-amber text-[#0C0A09] shadow-sm shadow-accent-amber/30'
+                              : 'bg-bg-primary border-border-subtle text-txt-secondary hover:border-accent-amber/40 hover:text-txt-primary'
+                          }`}
+                        >
+                          {lang.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* ── SONG TYPE / GENRE PREFERENCES (inline) ── */}
+                <div className="border-t border-border-subtle/40 pt-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Music className="w-3.5 h-3.5 text-accent-sienna" />
+                    <p className="text-xs font-bold text-txt-primary">Song Type Preferences</p>
+                  </div>
+                  <p className="text-[10px] text-txt-muted mb-3">Choose your favourite moods &amp; genres to personalise your feed</p>
+                  <div className="flex flex-wrap gap-2">
+                    {PREF_GENRES.map(genre => {
+                      const active = prefGenres.includes(genre.id);
+                      return (
+                        <button
+                          key={genre.id}
+                          onClick={() => setPrefGenres(prev =>
+                            prev.includes(genre.id) ? prev.filter(g => g !== genre.id) : [...prev, genre.id]
+                          )}
+                          className={`px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all cursor-pointer ${
+                            active
+                              ? 'bg-accent-sienna border-accent-sienna text-white shadow-sm shadow-accent-sienna/30'
+                              : 'bg-bg-primary border-border-subtle text-txt-secondary hover:border-accent-sienna/40 hover:text-txt-primary'
+                          }`}
+                        >
+                          {genre.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Save preferences button */}
+                <button
+                  disabled={prefSaving}
+                  onClick={async () => {
+                    setPrefSaving(true);
+                    await savePreferences({ languages: prefLangs, genres: prefGenres });
+                    setPrefSaving(false);
+                  }}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-accent-amber to-accent-sienna text-[#0C0A09] text-xs font-black uppercase tracking-wider transition-opacity hover:opacity-90 disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
+                >
+                  {prefSaving ? (
+                    <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving…</>
+                  ) : (
+                    <><Check className="w-3.5 h-3.5" /> Save Preferences</>
+                  )}
+                </button>
+
               </div>
             </motion.div>
           </div>
@@ -1399,7 +1724,7 @@ export default function App() {
       <AnimatePresence>
         {showAddModal && songToAddToPlaylist && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="absolute inset-0" onClick={() => setShowAddModal(false)} />
+            <div className="absolute inset-0" onClick={() => { setShowAddModal(false); setNewPlaylistName(''); }} />
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
@@ -1407,27 +1732,87 @@ export default function App() {
               className="bg-bg-secondary border border-border-subtle rounded-2xl max-w-md w-full p-6 relative z-10 shadow-2xl"
             >
               <button 
-                onClick={() => setShowAddModal(false)}
+                onClick={() => { setShowAddModal(false); setNewPlaylistName(''); }}
                 className="absolute top-4 right-4 p-1.5 text-txt-muted hover:text-txt-primary rounded-lg hover:bg-bg-tertiary transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
 
               <h4 className="font-serif font-black text-xl text-txt-primary border-b border-border-subtle/50 pb-3">Add to Playlist</h4>
-              <p className="text-xs text-txt-muted mt-2">Append "<strong>{songToAddToPlaylist.title}</strong>" to one of your folders:</p>
+              <p className="text-xs text-txt-muted mt-2">Append "<strong>{songToAddToPlaylist.title}</strong>" to a playlist:</p>
               
-              <div className="flex flex-col gap-2 mt-4 max-h-60 overflow-y-auto custom-scrollbar">
-                {playlists.map((playlist) => (
-                  <button
-                    key={playlist.id}
-                    onClick={() => handleAddSongToPlaylist(playlist.id)}
-                    className="flex items-center justify-between px-4 py-3 rounded-xl bg-bg-primary hover:bg-bg-tertiary transition-colors cursor-pointer text-left w-full"
-                  >
-                    <span className="text-xs font-semibold text-txt-primary">{playlist.name}</span>
-                    <span className="text-[10px] font-bold text-txt-muted">{playlist.song_count} Tracks</span>
-                  </button>
-                ))}
+              {/* Existing playlists list */}
+              <div className="flex flex-col gap-2 mt-4 max-h-48 overflow-y-auto custom-scrollbar">
+                {playlists.length === 0 ? (
+                  <p className="text-xs text-txt-muted text-center py-4">No playlists yet. Create one below ↓</p>
+                ) : (
+                  playlists.map((playlist) => (
+                    <button
+                      key={playlist.id}
+                      onClick={() => handleAddSongToPlaylist(playlist.id)}
+                      className="group flex items-center justify-between px-4 py-3 rounded-xl bg-bg-primary hover:bg-accent-amber/10 hover:border-accent-amber/30 border border-transparent transition-all cursor-pointer text-left w-full"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-7 h-7 rounded-lg bg-accent-amber/10 border border-accent-amber/20 flex items-center justify-center">
+                          <Library className="w-3.5 h-3.5 text-accent-amber" />
+                        </div>
+                        <span className="text-xs font-semibold text-txt-primary group-hover:text-accent-amber transition-colors">{playlist.name}</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-txt-muted">{playlist.song_count} Tracks</span>
+                    </button>
+                  ))
+                )}
               </div>
+
+              {/* Divider */}
+              <div className="flex items-center gap-3 my-4">
+                <div className="flex-1 h-px bg-border-subtle/50" />
+                <span className="text-[10px] font-black text-txt-muted uppercase tracking-widest">Or Create New</span>
+                <div className="flex-1 h-px bg-border-subtle/50" />
+              </div>
+
+              {/* Inline create new playlist form */}
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!newPlaylistName.trim()) return;
+                  const currentUser = useMusicStore.getState().user;
+                  const userId = currentUser?.email || 'anonymous';
+                  try {
+                    const res = await fetch(`/api/mobile/playlists?name=${encodeURIComponent(newPlaylistName)}&user_id=${encodeURIComponent(userId)}`, { method: 'POST' });
+                    const data = await res.json();
+                    if (data.status === 'success') {
+                      await fetchPlaylists();
+                      // Auto-add the song to the newly created playlist
+                      const updatedPlaylists = useMusicStore.getState().playlists;
+                      const newPL = updatedPlaylists.find(p => p.name === newPlaylistName);
+                      if (newPL) {
+                        await handleAddSongToPlaylist(newPL.id);
+                      }
+                      setNewPlaylistName('');
+                    }
+                  } catch (err) {
+                    console.error('Error creating playlist from modal:', err);
+                  }
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  type="text"
+                  value={newPlaylistName}
+                  onChange={(e) => setNewPlaylistName(e.target.value)}
+                  placeholder="New playlist name..."
+                  className="flex-1 bg-bg-primary border border-border-subtle rounded-xl px-3 py-2.5 text-xs font-semibold text-txt-primary placeholder-txt-muted/50 focus:outline-none focus:border-accent-amber transition-all"
+                />
+                <button
+                  type="submit"
+                  disabled={!newPlaylistName.trim()}
+                  className="px-4 py-2.5 bg-accent-amber text-[#0C0A09] rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer disabled:opacity-40 flex items-center gap-1.5 hover:bg-accent-amber/90"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                  Create
+                </button>
+              </form>
             </motion.div>
           </div>
         )}
@@ -1616,6 +2001,161 @@ export default function App() {
                   </form>
                 </>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* ========================================================
+          MUSIC PREFERENCES MODAL
+          ======================================================== */}
+      <AnimatePresence>
+        {showPrefsModal && (
+          <div className="fixed inset-0 bg-black/75 backdrop-blur-md flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ scale: 0.93, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.93, opacity: 0, y: 20 }}
+              transition={{ type: 'spring', damping: 22, stiffness: 200 }}
+              className="bg-bg-secondary border border-border-subtle rounded-3xl max-w-2xl w-full relative z-10 shadow-2xl overflow-hidden"
+            >
+              {/* Gradient header */}
+              <div className="relative bg-gradient-to-br from-accent-amber/20 via-accent-sienna/10 to-transparent p-8 pb-6 border-b border-border-subtle/50">
+                <button
+                  onClick={() => setShowPrefsModal(false)}
+                  className="absolute top-5 right-5 p-2 text-txt-muted hover:text-txt-primary rounded-xl hover:bg-bg-tertiary transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-accent-amber/20 border border-accent-amber/30 flex items-center justify-center">
+                    <Sliders className="w-5 h-5 text-accent-amber" />
+                  </div>
+                  <div>
+                    <h3 className="font-serif font-black text-2xl text-txt-primary">Music Preferences</h3>
+                    <p className="text-xs text-txt-muted mt-0.5">Pick languages & genres — your catalog will be sorted to match your taste.</p>
+                  </div>
+                </div>
+                {(prefLangs.length > 0 || prefGenres.length > 0) && (
+                  <div className="flex flex-wrap gap-1.5 mt-4">
+                    {prefLangs.map(l => (
+                      <span key={l} className="text-[10px] font-bold px-2 py-1 rounded-full bg-accent-amber/20 text-accent-amber border border-accent-amber/30">
+                        {PREF_LANGUAGES.find(x => x.id === l)?.label || l}
+                      </span>
+                    ))}
+                    {prefGenres.map(g => (
+                      <span key={g} className="text-[10px] font-bold px-2 py-1 rounded-full bg-accent-sienna/20 text-accent-sienna border border-accent-sienna/30">
+                        {PREF_GENRES.find(x => x.id === g)?.label || g}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-6 flex flex-col gap-6 max-h-[60vh] overflow-y-auto custom-scrollbar">
+
+                {/* Language section */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Globe className="w-4 h-4 text-accent-amber" />
+                    <h4 className="text-xs font-black text-txt-primary uppercase tracking-widest">Language</h4>
+                    <span className="text-[10px] font-bold text-txt-muted">(choose multiple)</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {PREF_LANGUAGES.map((lang) => {
+                      const selected = prefLangs.includes(lang.id);
+                      return (
+                        <button
+                          key={lang.id}
+                          onClick={() => {
+                            setPrefLangs(prev =>
+                              prev.includes(lang.id)
+                                ? prev.filter(x => x !== lang.id)
+                                : [...prev, lang.id]
+                            );
+                          }}
+                          className={`px-3 py-2 rounded-full border text-xs font-bold transition-all cursor-pointer ${
+                            selected
+                              ? 'bg-accent-amber text-[#0C0A09] border-accent-amber shadow-md shadow-accent-amber/20 scale-105'
+                              : 'bg-bg-primary border-border-subtle text-txt-secondary hover:border-accent-amber/40 hover:text-txt-primary'
+                          }`}
+                        >
+                          {lang.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Genre section */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Music className="w-4 h-4 text-accent-sienna" />
+                    <h4 className="text-xs font-black text-txt-primary uppercase tracking-widest">Genre / Mood</h4>
+                    <span className="text-[10px] font-bold text-txt-muted">(choose multiple)</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {PREF_GENRES.map((genre) => {
+                      const selected = prefGenres.includes(genre.id);
+                      return (
+                        <button
+                          key={genre.id}
+                          onClick={() => {
+                            setPrefGenres(prev =>
+                              prev.includes(genre.id)
+                                ? prev.filter(x => x !== genre.id)
+                                : [...prev, genre.id]
+                            );
+                          }}
+                          className={`px-3 py-2 rounded-full border text-xs font-bold transition-all cursor-pointer ${
+                            selected
+                              ? 'bg-accent-sienna text-white border-accent-sienna shadow-md shadow-accent-sienna/20 scale-105'
+                              : 'bg-bg-primary border-border-subtle text-txt-secondary hover:border-accent-sienna/40 hover:text-txt-primary'
+                          }`}
+                        >
+                          {genre.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer action buttons */}
+              <div className="flex items-center justify-between px-6 py-4 border-t border-border-subtle/50 bg-bg-primary/40">
+                <button
+                  onClick={() => {
+                    setPrefLangs([]);
+                    setPrefGenres([]);
+                  }}
+                  className="text-xs font-bold text-txt-muted hover:text-txt-primary transition-colors cursor-pointer"
+                >
+                  Clear all
+                </button>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setShowPrefsModal(false)}
+                    className="px-4 py-2.5 rounded-xl border border-border-subtle text-xs font-bold text-txt-secondary hover:text-txt-primary transition-colors cursor-pointer"
+                  >
+                    Skip
+                  </button>
+                  <button
+                    disabled={prefSaving}
+                    onClick={async () => {
+                      setPrefSaving(true);
+                      await savePreferences({ languages: prefLangs, genres: prefGenres });
+                      setPrefSaving(false);
+                      setShowPrefsModal(false);
+                    }}
+                    className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-accent-amber text-[#0C0A09] text-xs font-black uppercase tracking-wider hover:bg-accent-amber/90 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {prefSaving ? (
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving...</>
+                    ) : (
+                      <><Check className="w-3.5 h-3.5" /> Save Preferences</>
+                    )}
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

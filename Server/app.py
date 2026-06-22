@@ -30,6 +30,19 @@ async def lifespan(app: FastAPI):
     # Initialize PostgreSQL pool
     try:
         init_pool()
+        # Ensure user_preferences table exists (runtime migration)
+        try:
+            with get_db_cursor(commit=True) as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_preferences (
+                        user_id VARCHAR(255) PRIMARY KEY,
+                        languages TEXT[] DEFAULT '{}',
+                        genres TEXT[] DEFAULT '{}',
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+        except Exception as mig_err:
+            print(f"Warning: Could not create user_preferences table: {mig_err}")
     except Exception as e:
         print(f"Warning: Database pool failed to initialize. Ensure init_db.py has run: {e}")
     yield
@@ -146,10 +159,20 @@ def _itunes_to_song(item):
 def search_songs(query, user_id: str = "anonymous"):
     if not query:
         return []
+    import re
+    # Clean query: strip redundant words "song", "songs", "music" if not the only words
+    q_clean = query.strip()
+    if q_clean:
+        if not re.match(r'^(songs?|music)$', q_clean, re.IGNORECASE):
+            q_clean = re.sub(r'\b(songs?|music)\b', '', q_clean, flags=re.IGNORECASE)
+            q_clean = re.sub(r'\s+', ' ', q_clean).strip()
+    if not q_clean:
+        q_clean = query.strip()
+
     try:
         response = requests.get(
             "https://itunes.apple.com/search",
-            params={"term": query, "media": "music", "limit": 25, "country": "IN"},
+            params={"term": q_clean, "media": "music", "limit": 25, "country": "IN"},
             timeout=10,
         )
         data = response.json()
@@ -200,6 +223,80 @@ def get_chart(user_id: str = "anonymous"):
         return inject_cache_status(songs, user_id=user_id)
     except Exception:
         return []
+
+
+# Genres to exclude from the default (no-preference) home feed
+DEVOTIONAL_GENRES = {
+    "devotional", "bhakti", "spiritual", "religious", "mantra", "bhajans",
+    "gospel", "christian", "islamic", "prayer", "stotra", "aarti",
+    "carnatic", "qawwali"
+}
+
+
+def _parse_itunes_rss_entries(entries, user_id: str = "anonymous"):
+    """Shared parser for iTunes RSS feed entries (top songs / new music)."""
+    songs = []
+    for entry in entries:
+        try:
+            art_url = ""
+            for img in entry.get("im:image", []):
+                art_url = img.get("label", "")
+            cover = art_url.replace("170x170bb", "200x200bb") if art_url else ""
+            cover_xl = art_url.replace("170x170bb", "600x600bb") if art_url else ""
+            artist_id = 0
+            artist_link = entry.get("im:artist", {}).get("attributes", {}).get("href", "")
+            if "/id" in artist_link:
+                try:
+                    artist_id = int(artist_link.split("/id")[-1].split("?")[0])
+                except Exception:
+                    pass
+            track_id = str(entry.get("id", {}).get("attributes", {}).get("im:id", "0") or "0")
+            genre = entry.get("category", {}).get("attributes", {}).get("label", "Music")
+            songs.append({
+                "id": track_id,
+                "title": entry.get("im:name", {}).get("label", "Unknown"),
+                "artist": entry.get("im:artist", {}).get("label", "Unknown"),
+                "artist_id": artist_id,
+                "album": entry.get("im:collection", {}).get("im:name", {}).get("label", "Single"),
+                "cover": cover,
+                "cover_xl": cover_xl,
+                "duration": 0,
+                "genre": genre,
+            })
+        except Exception:
+            continue
+    if songs:
+        upsert_song_records(songs)
+    return inject_cache_status(songs, user_id=user_id)
+
+
+def get_new_releases(user_id: str = "anonymous"):
+    """Fetch latest global releases from iTunes new music feed, filtered of devotional content."""
+    results = []
+    # Primary: global new music feed
+    try:
+        response = requests.get(
+            "https://itunes.apple.com/us/rss/newmusic/limit=50/json",
+            timeout=10
+        ).json()
+        entries = response.get("feed", {}).get("entry", [])
+        results = _parse_itunes_rss_entries(entries, user_id=user_id)
+    except Exception:
+        pass
+
+    # Fallback: search for recent trending songs
+    if not results:
+        try:
+            results = search_songs("new songs 2025 trending", user_id=user_id)
+        except Exception:
+            pass
+
+    # Filter out devotional / religious genres
+    filtered = [
+        s for s in results
+        if not any(kw in (s.get("genre") or "").lower() for kw in DEVOTIONAL_GENRES)
+    ]
+    return filtered if filtered else results
 
 
 def fetch_lyrics(artist, title):
@@ -406,7 +503,125 @@ def mobile_search(q: str = "", user_id: str = "anonymous"):
 
 @app.get("/api/mobile/chart")
 def mobile_chart(user_id: str = "anonymous"):
-    return JSONResponse(get_chart(user_id=user_id))
+    # Fetch user preferences from DB if logged in
+    user_prefs = {"languages": [], "genres": []}
+    if user_id != "anonymous":
+        try:
+            with get_db_cursor() as cursor:
+                cursor.execute(
+                    "SELECT languages, genres FROM user_preferences WHERE user_id = %s;",
+                    (user_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    user_prefs = {"languages": list(row[0] or []), "genres": list(row[1] or [])}
+        except Exception:
+            pass
+
+    has_preferences = bool(user_prefs["languages"] or user_prefs["genres"])
+
+    # No preferences set → show latest global new releases (no devotional)
+    if not has_preferences:
+        new_releases = get_new_releases(user_id=user_id)
+        return JSONResponse(new_releases[:30])
+
+    # Has preferences → fetch preference-matched songs first, then India chart as filler
+    base_songs = get_chart(user_id=user_id)
+
+    # Map preferences to iTunes search terms
+    LANG_SEARCH = {
+        "Hindi": "hindi bollywood songs",
+        "Tamil": "tamil songs",
+        "Telugu": "telugu songs",
+        "Punjabi": "punjabi songs",
+        "Bengali": "bengali songs",
+        "Malayalam": "malayalam songs",
+        "Kannada": "kannada songs",
+        "Marathi": "marathi songs",
+        "English": "english pop hits",
+        "Korean": "kpop korean songs",
+        "Spanish": "spanish latin songs",
+        "French": "french music",
+    }
+    GENRE_SEARCH = {
+        "Party": "party dance club hits",
+        "Devotional": "devotional bhakti spiritual",
+        "Chill": "chill lofi relaxing",
+        "Romantic": "romantic love songs",
+        "Hip-Hop": "hip hop rap",
+        "Rock": "rock songs",
+        "Classical": "classical instrumental",
+        "Jazz": "jazz music",
+        "Pop": "pop songs top hits",
+        "Workout": "workout gym energetic",
+        "Sufi": "sufi ghazal music",
+        "Retro": "retro classic old hits",
+    }
+
+    seen_ids = {s["id"] for s in base_songs}
+    pref_songs = []
+
+    search_terms = []
+    for lang in user_prefs.get("languages", []):
+        if lang in LANG_SEARCH:
+            search_terms.append(LANG_SEARCH[lang])
+    for genre in user_prefs.get("genres", []):
+        if genre in GENRE_SEARCH:
+            search_terms.append(GENRE_SEARCH[genre])
+
+    # Fetch up to 3 preference search terms to avoid slow responses
+    for term in search_terms[:3]:
+        try:
+            songs = search_songs(term, user_id=user_id)
+            for song in songs:
+                if song["id"] not in seen_ids:
+                    pref_songs.append(song)
+                    seen_ids.add(song["id"])
+        except Exception:
+            pass
+
+    # Preference songs first, then chart songs (deduplicated)
+    combined = pref_songs[:25] + base_songs
+    return JSONResponse(combined[:50])
+
+
+@app.get("/api/mobile/preferences")
+def get_preferences(user_id: str = "anonymous"):
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute(
+                "SELECT languages, genres FROM user_preferences WHERE user_id = %s;",
+                (user_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return JSONResponse({"languages": list(row[0] or []), "genres": list(row[1] or [])})
+        return JSONResponse({"languages": [], "genres": []})
+    except Exception:
+        return JSONResponse({"languages": [], "genres": []})
+
+
+class PreferencesRequest(BaseModel):
+    user_id: str
+    languages: List[str] = []
+    genres: List[str] = []
+
+
+@app.post("/api/mobile/preferences")
+def save_preferences(req: PreferencesRequest):
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO user_preferences (user_id, languages, genres, updated_at)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    languages = EXCLUDED.languages,
+                    genres = EXCLUDED.genres,
+                    updated_at = CURRENT_TIMESTAMP;
+            """, (req.user_id, req.languages, req.genres))
+        return JSONResponse({"status": "success"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/mobile/recommend")
@@ -529,6 +744,21 @@ def mobile_signin(req: AuthRequest):
 @app.get("/api/mobile/health")
 def mobile_health():
     return JSONResponse({"status": "ok", "server": "AudioDrip", "version": "3.0", "timestamp": int(time.time())})
+
+
+@app.get("/api/mobile/check_email")
+def check_email(email: str = ""):
+    email = email.strip().lower()
+    if not email:
+        return JSONResponse({"exists": False})
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT 1 FROM users WHERE email = %s;", (email,))
+            exists = cursor.fetchone() is not None
+            return JSONResponse({"exists": exists})
+    except Exception as e:
+        print(f"Error checking email: {e}")
+        return JSONResponse({"exists": False})
 
 
 class PasswordResetRequest(BaseModel):
@@ -742,6 +972,8 @@ def generate_ai_playlist(req: AIPlaylistRequest):
     if not prompt:
         return JSONResponse({"error": "Prompt cannot be empty"}, status_code=400)
     
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
     groq_key = os.getenv("GROQ_API_KEY")
     if not groq_key:
         print("Warning: GROQ_API_KEY not configured. Falling back to local catalog match.")
@@ -782,6 +1014,28 @@ def generate_ai_playlist(req: AIPlaylistRequest):
         genres = ai_meta.get("genres", [])
         keywords = ai_meta.get("keywords", [])
         
+        # Dynamically seed local DB with fresh matches from iTunes Search API in parallel
+        import re
+        search_terms = []
+        clean_prompt = prompt
+        if not re.match(r'^(songs?|music)$', clean_prompt, re.IGNORECASE):
+            clean_prompt = re.sub(r'\b(songs?|music)\b', '', clean_prompt, flags=re.IGNORECASE)
+            clean_prompt = re.sub(r'\s+', ' ', clean_prompt).strip()
+        if clean_prompt:
+            search_terms.append(clean_prompt)
+            
+        for g in genres[:2]:
+            for k in keywords[:2]:
+                if g.lower() != k.lower():
+                    search_terms.append(f"{g} {k}")
+                else:
+                    search_terms.append(g)
+        
+        search_terms = list(dict.fromkeys(search_terms))
+        
+        with ThreadPoolExecutor(max_workers=3) as pool_exec:
+            pool_exec.map(lambda term: search_songs(term, user_id=req.user_id), search_terms[:4])
+        
         matched_song_ids = []
         with get_db_cursor() as cursor:
             clauses = []
@@ -794,13 +1048,21 @@ def generate_ai_playlist(req: AIPlaylistRequest):
                 params.extend([f"%{k}%", f"%{k}%", f"%{k}%", f"%{k}%"])
                 
             if clauses:
-                query = f"SELECT id FROM songs WHERE {' OR '.join(clauses)} LIMIT 15;"
-                cursor.execute(query, params)
+                case_clauses = [f"CASE WHEN {c} THEN 1 ELSE 0 END" for c in clauses]
+                score_expr = " + ".join(case_clauses)
+                query = f"""
+                    SELECT id, ({score_expr}) as match_score 
+                    FROM songs 
+                    WHERE {' OR '.join(clauses)} 
+                    ORDER BY match_score DESC, last_played_at DESC 
+                    LIMIT 15;
+                """
+                cursor.execute(query, params + params)
                 matched_song_ids = [row[0] for row in cursor.fetchall()]
                 
-        if len(matched_song_ids) < 5:
+        if len(matched_song_ids) < 10:
             with get_db_cursor() as cursor:
-                cursor.execute("SELECT id FROM songs ORDER BY last_played_at DESC LIMIT 10;")
+                cursor.execute("SELECT id FROM songs ORDER BY last_played_at DESC LIMIT 20;")
                 extra_ids = [row[0] for row in cursor.fetchall()]
                 for eid in extra_ids:
                     if eid not in matched_song_ids:
@@ -823,22 +1085,51 @@ def generate_ai_playlist(req: AIPlaylistRequest):
 
 
 def generate_fallback_playlist_local(prompt, user_id):
+    # Pre-fetch matching songs from iTunes to seed local database
+    import re
+    clean_prompt = prompt
+    if not re.match(r'^(songs?|music)$', clean_prompt, re.IGNORECASE):
+        clean_prompt = re.sub(r'\b(songs?|music)\b', '', clean_prompt, flags=re.IGNORECASE)
+        clean_prompt = re.sub(r'\s+', ' ', clean_prompt).strip()
+    if clean_prompt:
+        try:
+            search_songs(clean_prompt, user_id=user_id)
+        except Exception:
+            pass
+
     words = [w.strip().lower() for w in prompt.split() if len(w.strip()) > 3]
     matched_songs = []
     with get_db_cursor() as cursor:
         if words:
-            query_clauses = " OR ".join(["title ILIKE %s OR artist ILIKE %s OR genre ILIKE %s"] * len(words))
+            clauses = []
             params = []
+            case_clauses = []
             for w in words:
+                clause = "(title ILIKE %s OR artist ILIKE %s OR genre ILIKE %s)"
+                clauses.append(clause)
                 params.extend([f"%{w}%", f"%{w}%", f"%{w}%"])
-            cursor.execute(f"SELECT id, title, artist FROM songs WHERE {query_clauses} LIMIT 10;", params)
+                case_clauses.append(f"CASE WHEN {clause} THEN 1 ELSE 0 END")
+                
+            score_expr = " + ".join(case_clauses)
+            query = f"""
+                SELECT id, title, artist, ({score_expr}) as match_score 
+                FROM songs 
+                WHERE {' OR '.join(clauses)} 
+                ORDER BY match_score DESC, last_played_at DESC 
+                LIMIT 15;
+            """
+            cursor.execute(query, params + params)
             matched_songs = cursor.fetchall()
             
-        if not matched_songs:
-            cursor.execute("SELECT id, title, artist FROM songs LIMIT 10;")
-            matched_songs = cursor.fetchall()
-            
-    song_ids = [s[0] for s in matched_songs]
+        matched_ids = [s[0] for s in matched_songs]
+        if len(matched_ids) < 10:
+            cursor.execute("SELECT id FROM songs ORDER BY last_played_at DESC LIMIT 20;")
+            extra_ids = [row[0] for row in cursor.fetchall()]
+            for eid in extra_ids:
+                if eid not in matched_ids:
+                    matched_ids.append(eid)
+                    
+    song_ids = matched_ids[:15]
     playlist_name = f"AI: {prompt[:30]}"
     try:
         with get_db_cursor(commit=True) as cursor:

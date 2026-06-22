@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { motion, useMotionValue, useSpring, useTransform } from 'framer-motion';
-import { Play, Pause, Heart, Download, Check } from 'lucide-react';
+import { Play, Pause, Heart, Download, Check, Plus } from 'lucide-react';
 import type { Track } from '../store/useMusicStore';
 import { VinylRecord } from './VinylRecord';
 
@@ -11,6 +11,7 @@ interface TrackCardProps {
   onPlay: (track: Track) => void;
   onToggleLike?: (id: string, e: React.MouseEvent) => void;
   onCache?: (track: Track, e: React.MouseEvent) => void;
+  onAddToPlaylist?: (track: Track, e: React.MouseEvent) => void;
   className?: string;
 }
 
@@ -21,6 +22,7 @@ export const TrackCard: React.FC<TrackCardProps> = ({
   onPlay,
   onToggleLike,
   onCache,
+  onAddToPlaylist,
   className = '',
 }) => {
   const [isHovered, setIsHovered] = useState(false);
@@ -128,6 +130,20 @@ export const TrackCard: React.FC<TrackCardProps> = ({
             )}
           </button>
         </div>
+
+        {/* Add to Playlist button */}
+        {onAddToPlaylist && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onAddToPlaylist(track, e);
+            }}
+            className="absolute top-3 right-[5.25rem] p-2 rounded-full bg-black/45 text-txt-primary hover:text-accent-amber hover:scale-110 transition-all z-20"
+            title="Add to Playlist"
+          >
+            <Plus className="w-3.5 h-3.5 text-txt-primary" />
+          </button>
+        )}
 
         {/* Cache/Download button */}
         {onCache && (

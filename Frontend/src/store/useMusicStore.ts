@@ -127,6 +127,11 @@ export interface Playlist {
   created_at: string;
 }
 
+export interface UserPreferences {
+  languages: string[];
+  genres: string[];
+}
+
 interface MusicState {
   // Auth
   user: AudioDripUser | null;
@@ -163,6 +168,7 @@ interface MusicState {
   duration: number;
   currentTime: number;
   isMuted: boolean;
+  repeatMode: 'off' | 'one' | 'all';
   visualizerMode: "bars" | "orbit" | "tape";
   skinColors: { primary: string; secondary: string };
 
@@ -179,6 +185,10 @@ interface MusicState {
   newPlaylistName: string;
   showAddModal: boolean;
   songToAddToPlaylist: Song | null;
+
+  // User Preferences
+  userPreferences: UserPreferences;
+  showPrefsModal: boolean;
 
   // AI Playlist Generator
   isGeneratingAIPlaylist: boolean;
@@ -198,6 +208,7 @@ interface MusicState {
   setSkinColors: (colors: { primary: string; secondary: string }) => void;
   toggleBooth: () => void;
   toggleQueue: () => void;
+  toggleRepeat: () => void;
   toggleSidebar: () => void;
   setViewMode: (mode: "grid" | "list") => void;
 
@@ -231,6 +242,9 @@ interface MusicState {
   handleToggleLike: (song: Song, e?: React.MouseEvent) => Promise<void>;
   handleGenerateAIPlaylist: (prompt: string) => Promise<void>;
   cacheSong: (track: Track) => Promise<void>;
+  fetchPreferences: () => Promise<void>;
+  savePreferences: (prefs: UserPreferences) => Promise<void>;
+  setShowPrefsModal: (show: boolean) => void;
 
   // Auth Operations
   signUp: (email: string, password: string) => Promise<void>;
@@ -265,7 +279,22 @@ export const useMusicStore = create<MusicState>((set, get) => {
       set({ duration: audio!.duration || 0 });
     });
     audio.addEventListener('ended', () => {
-      get().skipNext();
+      const { repeatMode, currentTrack, play, skipNext } = get();
+      if (repeatMode === 'one' && currentTrack) {
+        play(currentTrack);
+      } else if (repeatMode === 'off') {
+        const { queue } = get();
+        if (queue.length > 0 && currentTrack) {
+          const currentIndex = queue.findIndex(t => t.id === currentTrack.id);
+          if (currentIndex < queue.length - 1) {
+            skipNext();
+          } else {
+            set({ isPlaying: false });
+          }
+        }
+      } else {
+        skipNext();
+      }
     });
   }
 
@@ -305,12 +334,17 @@ export const useMusicStore = create<MusicState>((set, get) => {
     duration: 0,
     currentTime: 0,
     isMuted: false,
+    repeatMode: 'off',
     visualizerMode: 'bars',
     skinColors: { primary: '#F59E0B', secondary: '#E11D72' },
 
     // Queue lists
     queue: [],
     history: [],
+
+    // User Preferences
+    userPreferences: { languages: [], genres: [] },
+    showPrefsModal: false,
 
     // UI Panel configurations
     isSidebarExpanded: false,
@@ -482,6 +516,13 @@ export const useMusicStore = create<MusicState>((set, get) => {
     toggleBooth: () => set((state) => ({ isBoothOpen: !state.isBoothOpen })),
     toggleQueue: () => set((state) => ({ isQueueOpen: !state.isQueueOpen })),
     toggleSidebar: () => set((state) => ({ isSidebarExpanded: !state.isSidebarExpanded })),
+    toggleRepeat: () => {
+      const current = get().repeatMode;
+      let next: 'off' | 'one' | 'all' = 'off';
+      if (current === 'off') next = 'one';
+      else if (current === 'one') next = 'all';
+      set({ repeatMode: next });
+    },
     setViewMode: (mode) => set({ viewMode: mode }),
 
     // Tab Setters
@@ -496,6 +537,54 @@ export const useMusicStore = create<MusicState>((set, get) => {
     setSelectedVibe: (vibe) => set({ selectedVibe: vibe }),
     setShowAuthModal: (show) => set({ showAuthModal: show, authError: null, authMessage: null }),
     setAuthView: (view) => set({ authView: view, authError: null, authMessage: null }),
+    setShowPrefsModal: (show) => set({ showPrefsModal: show }),
+
+    fetchPreferences: async () => {
+      const currentUser = get().user;
+      if (currentUser) {
+        // Logged-in: fetch from backend
+        try {
+          const res = await fetch(`/api/mobile/preferences?user_id=${encodeURIComponent(currentUser.email)}`);
+          const data = await res.json();
+          const prefs: UserPreferences = {
+            languages: data.languages || [],
+            genres: data.genres || [],
+          };
+          set({ userPreferences: prefs });
+          localStorage.setItem('audiodrip_prefs', JSON.stringify(prefs));
+        } catch (err) {
+          console.error('Error fetching preferences:', err);
+        }
+      } else {
+        // Guest: load from localStorage
+        const stored = localStorage.getItem('audiodrip_prefs');
+        if (stored) {
+          try {
+            const prefs = JSON.parse(stored) as UserPreferences;
+            set({ userPreferences: prefs });
+          } catch { /* ignore */ }
+        }
+      }
+    },
+
+    savePreferences: async (prefs: UserPreferences) => {
+      set({ userPreferences: prefs });
+      localStorage.setItem('audiodrip_prefs', JSON.stringify(prefs));
+      const currentUser = get().user;
+      if (currentUser) {
+        try {
+          await fetch('/api/mobile/preferences', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: currentUser.email, ...prefs }),
+          });
+        } catch (err) {
+          console.error('Error saving preferences to backend:', err);
+        }
+      }
+      // Refresh chart with new preferences applied
+      await get().fetchChart();
+    },
 
     // DEEZER CHART LOADER
     fetchChart: async () => {
@@ -713,6 +802,7 @@ export const useMusicStore = create<MusicState>((set, get) => {
           const playlistList = get().playlists;
           const newPL = playlistList.find(p => p.id === data.playlist.id) || data.playlist;
           set({
+            activeTab: 'library',
             selectedPlaylist: newPL,
             librarySubTab: 'playlists'
           });
@@ -788,7 +878,10 @@ export const useMusicStore = create<MusicState>((set, get) => {
           await get().fetchLikedSongs();
           await get().fetchPlaylists();
           await get().fetchLibrary();
+          await get().fetchPreferences();
           await get().fetchChart();
+          // New account: always show preferences modal
+          set({ showPrefsModal: true });
         }
       } catch (err) {
         console.error("SignUp backend error:", err);
@@ -815,7 +908,13 @@ export const useMusicStore = create<MusicState>((set, get) => {
           await get().fetchLikedSongs();
           await get().fetchPlaylists();
           await get().fetchLibrary();
+          await get().fetchPreferences();
           await get().fetchChart();
+          // Show preferences modal if user has never set preferences
+          const prefs = get().userPreferences;
+          if (prefs.languages.length === 0 && prefs.genres.length === 0) {
+            set({ showPrefsModal: true });
+          }
         }
       } catch (err) {
         console.error("SignIn backend error:", err);
@@ -858,6 +957,14 @@ export const useMusicStore = create<MusicState>((set, get) => {
             // Ignore parse errors
           }
         }
+        // Load stored preferences (for guests too)
+        const storedPrefs = localStorage.getItem('audiodrip_prefs');
+        if (storedPrefs) {
+          try {
+            const prefs = JSON.parse(storedPrefs) as UserPreferences;
+            set({ userPreferences: prefs });
+          } catch { /* ignore */ }
+        }
       }
     },
 
@@ -868,16 +975,9 @@ export const useMusicStore = create<MusicState>((set, get) => {
       }
       set({ authLoading: true, authError: null, authMessage: null });
       try {
-        // Verify the email exists by calling health — store the email for later reset
-        const response = await fetch('/api/mobile/signin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email.trim().toLowerCase(), password: '__reset_check__' })
-        });
+        const response = await fetch(`/api/mobile/check_email?email=${encodeURIComponent(email.trim().toLowerCase())}`);
         const data = await response.json();
-        // "Invalid email or password" means the user exists (correct error), 
-        // anything else (e.g. network error) is a real failure
-        if (data.error && data.error.includes('account')) {
+        if (!data.exists) {
           set({ authError: 'No account found with that email address.', authLoading: false });
           return;
         }

@@ -8,6 +8,7 @@ interface MagneticButtonProps {
   as?: 'button' | 'div';
   haloRadius?: number;
   disabled?: boolean;
+  title?: string;
 }
 
 interface Ripple {
@@ -23,6 +24,7 @@ export const MagneticButton: React.FC<MagneticButtonProps> = ({
   as = 'button',
   haloRadius = 120,
   disabled = false,
+  title,
 }) => {
   const ref = useRef<HTMLButtonElement | HTMLDivElement>(null);
   const [isHovered, setIsHovered] = useState(false);
@@ -104,6 +106,7 @@ export const MagneticButton: React.FC<MagneticButtonProps> = ({
       ref={ref as any}
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       onClick={onClick as any}
+      title={title}
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
       onMouseLeave={() => {
