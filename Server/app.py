@@ -370,9 +370,37 @@ def enrich_catalog_for_song(song_id):
     song = get_song_by_id(song_id)
     if not song:
         return
-    fetched_songs = fetch_artist_tracks(song.get("artist_id"))
-    if not fetched_songs:
-        fetch_artist_search_results(song.get("artist"))
+        
+    artist = song.get("artist")
+    genre = song.get("genre")
+    
+    search_terms = []
+    if artist:
+        clean_artist = artist.strip()
+        if clean_artist:
+            search_terms.append(clean_artist)
+            
+    if genre and genre.lower() not in ["music", "unknown", ""]:
+        clean_genre = genre.strip()
+        search_terms.append(f"{clean_genre} songs")
+        
+    search_terms = list(dict.fromkeys(search_terms))
+    
+    # Pre-fetch matching tracks in parallel to seed catalog for similarity calculations
+    if search_terms:
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool_exec:
+                pool_exec.map(lambda term: search_songs(term), search_terms[:3])
+        except Exception:
+            pass
+            
+    # Keep artist_id lookup as fallback
+    artist_id = song.get("artist_id")
+    if artist_id and int(artist_id) > 0:
+        try:
+            fetch_artist_tracks(artist_id)
+        except Exception:
+            pass
 
 
 def hydrate_song_ids(song_ids, user_id: str = "anonymous"):
