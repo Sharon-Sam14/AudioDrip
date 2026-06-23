@@ -455,6 +455,11 @@ def download_task(song_id, artist, title):
         "outtmpl": str(CACHE_DIR / f"{song_id}.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "android"]
+            }
+        }
     }
     if cookie_path.exists():
         ydl_opts["cookiefile"] = str(cookie_path)
@@ -509,6 +514,11 @@ def render_play_response(request: Request, song_id: str, artist: str, title: str
         "format": "bestaudio[ext=m4a]/best",
         "noplaylist": True,
         "quiet": False,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "android"]
+            }
+        }
     }
     if cookie_path.exists():
         ydl_opts["cookiefile"] = str(cookie_path)
