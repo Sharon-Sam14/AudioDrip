@@ -457,7 +457,7 @@ def download_task(song_id, artist, title):
         "quiet": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["ios", "android"]
+                "player_client": ["ios", "android", "tv_downgraded", "web_embedded"]
             }
         }
     }
@@ -516,7 +516,7 @@ def render_play_response(request: Request, song_id: str, artist: str, title: str
         "quiet": False,
         "extractor_args": {
             "youtube": {
-                "player_client": ["ios", "android"]
+                "player_client": ["ios", "android", "tv_downgraded", "web_embedded"]
             }
         }
     }
