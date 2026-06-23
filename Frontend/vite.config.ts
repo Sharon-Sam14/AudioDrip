@@ -9,7 +9,7 @@ export default defineConfig({
     tailwindcss(),
   ],
   build: {
-    outDir: '../Server/static',
+    outDir: process.env.VERCEL ? 'dist' : '../Server/static',
     emptyOutDir: true,
   },
   server: {
