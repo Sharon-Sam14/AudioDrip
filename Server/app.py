@@ -14,7 +14,7 @@ from email.mime.text import MIMEText
 import requests
 import yt_dlp
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -796,7 +796,7 @@ AudioDrip Team"""
 
 
 @app.post("/api/mobile/signup")
-def mobile_signup(req: AuthRequest):
+def mobile_signup(req: AuthRequest, background_tasks: BackgroundTasks):
     email = req.email.strip().lower()
     password = req.password
     if not email or not password:
@@ -820,7 +820,7 @@ def mobile_signup(req: AuthRequest):
             """, (email, hashed_password, code, expires_at))
             row = cursor.fetchone()
             
-            send_verification_email(email, code)
+            background_tasks.add_task(send_verification_email, email, code)
             
             return JSONResponse({
                 "status": "success", 
@@ -913,7 +913,7 @@ def verify_email(req: VerifyRequest):
 
 
 @app.post("/api/mobile/resend_verification")
-def resend_verification(req: ResendRequest):
+def resend_verification(req: ResendRequest, background_tasks: BackgroundTasks):
     email = req.email.strip().lower()
     if not email:
         return JSONResponse({"error": "Email is required"}, status_code=400)
@@ -939,7 +939,7 @@ def resend_verification(req: ResendRequest):
                 WHERE id = %s;
             """, (code, expires_at, db_id))
             
-            send_verification_email(email, code)
+            background_tasks.add_task(send_verification_email, email, code)
             return JSONResponse({"status": "success", "message": "A new verification code has been sent."})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
