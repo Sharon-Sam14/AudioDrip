@@ -25,6 +25,7 @@ Server/data/*
 Server/data/pymusic.db
 Server/song_cache/
 Server/.env
+Server/cookies.txt
 
 # === General ===
 *.log
