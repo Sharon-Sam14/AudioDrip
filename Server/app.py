@@ -444,28 +444,78 @@ def build_up_next_response(song_id, limit=10, user_id: str = "anonymous"):
     return result
 
 
+def extract_video_info(query_or_url: str, is_download: bool = False, song_id: str = None):
+    cookie_path = BASE_DIR / "cookies.txt"
+    
+    # Attempt 1: Without cookies using mobile clients (extremely resilient for public audio)
+    ydl_opts_nocookies = {
+        "format": "bestaudio[ext=m4a]/best",
+        "noplaylist": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "android"]
+            }
+        }
+    }
+    if is_download and song_id:
+        ydl_opts_nocookies["outtmpl"] = str(CACHE_DIR / f"{song_id}.%(ext)s")
+        ydl_opts_nocookies["quiet"] = True
+    else:
+        ydl_opts_nocookies["quiet"] = False
+
+    try:
+        print("[YT-DLP] Attempt 1: Fetching stream without cookies (emulating mobile)...")
+        with yt_dlp.YoutubeDL(ydl_opts_nocookies) as ydl:
+            if is_download:
+                ydl.download([query_or_url])
+                return {"status": "downloaded"}
+            else:
+                info = ydl.extract_info(query_or_url, download=False)
+                return info
+    except Exception as e:
+        print(f"[YT-DLP] Attempt 1 failed: {e}")
+        
+    # Attempt 2: Fallback with cookies using TV/embedded players
+    if cookie_path.exists():
+        ydl_opts_cookies = {
+            "format": "bestaudio[ext=m4a]/best",
+            "noplaylist": True,
+            "cookiefile": str(cookie_path),
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["tv_downgraded", "web_embedded"]
+                }
+            }
+        }
+        if is_download and song_id:
+            ydl_opts_cookies["outtmpl"] = str(CACHE_DIR / f"{song_id}.%(ext)s")
+            ydl_opts_cookies["quiet"] = True
+        else:
+            ydl_opts_cookies["quiet"] = False
+            
+        try:
+            print("[YT-DLP] Attempt 2: Fetching stream WITH cookies (emulating TV/embedded)...")
+            with yt_dlp.YoutubeDL(ydl_opts_cookies) as ydl:
+                if is_download:
+                    ydl.download([query_or_url])
+                    return {"status": "downloaded"}
+                else:
+                    info = ydl.extract_info(query_or_url, download=False)
+                    return info
+        except Exception as e2:
+            print(f"[YT-DLP] Attempt 2 failed: {e2}")
+            raise e2
+    else:
+        raise e
+
+
 def download_task(song_id, artist, title):
     clear_cache_if_needed()
     if is_song_cached(song_id):
         return
     query = f"{artist} - {title} audio"
-    cookie_path = BASE_DIR / "cookies.txt"
-    ydl_opts = {
-        "format": "bestaudio[ext=m4a]/best",
-        "outtmpl": str(CACHE_DIR / f"{song_id}.%(ext)s"),
-        "noplaylist": True,
-        "quiet": True,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "android", "tv_downgraded", "web_embedded"]
-            }
-        }
-    }
-    if cookie_path.exists():
-        ydl_opts["cookiefile"] = str(cookie_path)
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f"ytsearch1:{query}"])
+        extract_video_info(f"ytsearch1:{query}", is_download=True, song_id=song_id)
         clear_cache_if_needed()
     except Exception:
         pass
@@ -509,29 +559,15 @@ def render_play_response(request: Request, song_id: str, artist: str, title: str
         return JSONResponse({"source": "local", "url": f"{base_url}/api/mobile/stream_cache/{filename}"})
 
     query = f"{artist} - {title} audio"
-    cookie_path = BASE_DIR / "cookies.txt"
-    ydl_opts = {
-        "format": "bestaudio[ext=m4a]/best",
-        "noplaylist": True,
-        "quiet": False,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "android", "tv_downgraded", "web_embedded"]
-            }
-        }
-    }
-    if cookie_path.exists():
-        ydl_opts["cookiefile"] = str(cookie_path)
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            video = info["entries"][0] if "entries" in info else info
-            http_headers = video.get("http_headers", {})
-            base_url = str(request.base_url).rstrip("/")
-            proxy_url = f"{base_url}/api/mobile/stream_proxy?url={quote(video['url'])}&headers={quote(json.dumps(http_headers))}"
-            return JSONResponse({"source": "youtube", "url": proxy_url, "direct_url": video["url"], "headers": http_headers})
-        except Exception as exc:
-            return JSONResponse({"error": f"Song not found: {exc}"}, status_code=404)
+    try:
+        info = extract_video_info(f"ytsearch1:{query}", is_download=False)
+        video = info["entries"][0] if "entries" in info else info
+        http_headers = video.get("http_headers", {})
+        base_url = str(request.base_url).rstrip("/")
+        proxy_url = f"{base_url}/api/mobile/stream_proxy?url={quote(video['url'])}&headers={quote(json.dumps(http_headers))}"
+        return JSONResponse({"source": "youtube", "url": proxy_url, "direct_url": video["url"], "headers": http_headers})
+    except Exception as exc:
+        return JSONResponse({"error": f"Song not found: {exc}"}, status_code=404)
 
 
 STATIC_DIR = BASE_DIR / "static"
