@@ -6,5 +6,4 @@ requests==2.32.5
 uvicorn==0.37.0
 yt-dlp==2026.3.3
 python-dotenv==1.0.1
-yt-dlp-get-pot==0.3.0
-yt-dlp-get-pot-rustypipe==0.2.0
+

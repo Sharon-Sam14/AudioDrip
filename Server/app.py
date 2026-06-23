@@ -444,6 +444,129 @@ def build_up_next_response(song_id, limit=10, user_id: str = "anonymous"):
     return result
 
 
+def get_audio_from_invidious(query: str):
+    instances = [
+        "https://invidious.projectsegfau.lt",
+        "https://invidious.privacydev.net",
+        "https://iv.ggtyler.dev",
+        "https://invidious.lunar.icu",
+        "https://yewtu.be",
+        "https://inv.tux.im",
+        "https://invidious.flokinet.to",
+        "https://inv.nadeko.net",
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    for instance in instances:
+        instance = instance.rstrip('/')
+        try:
+            search_url = f"{instance}/api/v1/search"
+            r = requests.get(search_url, params={"q": query, "type": "video"}, headers=headers, timeout=5)
+            if r.status_code != 200:
+                continue
+            results = r.json()
+            if not results or not isinstance(results, list):
+                continue
+            video_id = results[0].get("videoId")
+            if not video_id:
+                continue
+            
+            video_url = f"{instance}/api/v1/videos/{video_id}"
+            r_video = requests.get(video_url, headers=headers, timeout=5)
+            if r_video.status_code != 200:
+                continue
+            video_data = r_video.json()
+            adaptive = video_data.get("adaptiveFormats", [])
+            audio_formats = [f for f in adaptive if f.get("type", "").startswith("audio/")]
+            if not audio_formats:
+                continue
+            
+            audio_formats.sort(key=lambda x: int(x.get("bitrate") or 0), reverse=True)
+            best_audio = audio_formats[0]
+            stream_url = best_audio.get("url")
+            if not stream_url:
+                continue
+            
+            if "local=true" not in stream_url:
+                if "?" in stream_url:
+                    stream_url += "&local=true"
+                else:
+                    stream_url += "?local=true"
+            
+            return {
+                "source": "invidious",
+                "url": stream_url,
+                "title": results[0].get("title", "Audio Stream"),
+                "videoId": video_id,
+                "instance": instance
+            }
+        except Exception:
+            continue
+    return None
+
+
+def get_audio_from_piped(query: str):
+    instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.lunar.icu",
+        "https://pipedapi.privacydev.net",
+        "https://pipedapi.projectsegfau.lt",
+        "https://pipedapi.tokyo.projectsegfau.lt",
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    for instance in instances:
+        instance = instance.rstrip('/')
+        try:
+            search_url = f"{instance}/search"
+            r = requests.get(search_url, params={"q": query, "filter": "videos"}, headers=headers, timeout=5)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            items = data.get("items", [])
+            if not items:
+                continue
+            video = items[0]
+            video_url = video.get("url", "")
+            if "v=" not in video_url:
+                continue
+            video_id = video_url.split("v=")[-1]
+            if not video_id:
+                continue
+            
+            stream_url = f"{instance}/streams/{video_id}"
+            r_stream = requests.get(stream_url, headers=headers, timeout=5)
+            if r_stream.status_code != 200:
+                continue
+            stream_data = r_stream.json()
+            audio_streams = stream_data.get("audioStreams", [])
+            if not audio_streams:
+                continue
+            
+            best_audio = audio_streams[0]
+            url = best_audio.get("url")
+            if url:
+                return {
+                    "source": "piped",
+                    "url": url,
+                    "title": video.get("title", "Audio Stream"),
+                    "videoId": video_id,
+                    "instance": instance
+                }
+        except Exception:
+            continue
+    return None
+
+
+def get_audio_fallback(query: str):
+    res = get_audio_from_invidious(query)
+    if res:
+        return res
+    return get_audio_from_piped(query)
+
+
 def extract_video_info(query_or_url: str, is_download: bool = False, song_id: str = None):
     cookie_path = BASE_DIR / "cookies.txt"
     
@@ -517,8 +640,33 @@ def download_task(song_id, artist, title):
     try:
         extract_video_info(f"ytsearch1:{query}", is_download=True, song_id=song_id)
         clear_cache_if_needed()
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[DOWNLOAD] yt-dlp download failed on Render: {exc}. Trying fallback...")
+        try:
+            fallback = get_audio_fallback(query)
+            if fallback:
+                stream_url = fallback["url"]
+                ext = "m4a"
+                r = requests.get(stream_url, stream=True, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+                if r.status_code == 200:
+                    content_type = r.headers.get("Content-Type", "")
+                    if "webm" in content_type:
+                        ext = "webm"
+                    elif "ogg" in content_type or "opus" in content_type:
+                        ext = "opus"
+                    
+                    filepath = CACHE_DIR / f"{song_id}.{ext}"
+                    with open(filepath, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 16):
+                            f.write(chunk)
+                    print(f"[DOWNLOAD] Successfully cached song via fallback to {filepath}")
+                    clear_cache_if_needed()
+                else:
+                    print(f"[DOWNLOAD] Fallback download HTTP error: {r.status_code}")
+            else:
+                print("[DOWNLOAD] Fallback could not find stream URL")
+        except Exception as e:
+            print(f"[DOWNLOAD] Fallback download failed: {e}")
 
 
 def build_proxy_response(url: str, incoming_headers, headers_json: str):
@@ -567,6 +715,21 @@ def render_play_response(request: Request, song_id: str, artist: str, title: str
         proxy_url = f"{base_url}/api/mobile/stream_proxy?url={quote(video['url'])}&headers={quote(json.dumps(http_headers))}"
         return JSONResponse({"source": "youtube", "url": proxy_url, "direct_url": video["url"], "headers": http_headers})
     except Exception as exc:
+        print(f"[PLAYBACK] yt-dlp extraction failed: {exc}. Trying fallback...")
+        try:
+            fallback = get_audio_fallback(query)
+            if fallback:
+                print(f"[PLAYBACK] Fallback succeeded with {fallback['source']} instance {fallback['instance']}")
+                return JSONResponse({
+                    "source": fallback["source"],
+                    "url": fallback["url"],
+                    "direct_url": fallback["url"],
+                    "headers": {}
+                })
+            else:
+                print("[PLAYBACK] Fallback returned no stream URL")
+        except Exception as e:
+            print(f"[PLAYBACK] Fallback logic failed: {e}")
         return JSONResponse({"error": f"Song not found: {exc}"}, status_code=404)
 
 
