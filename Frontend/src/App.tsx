@@ -192,6 +192,8 @@ export default function App() {
     authError,
     signUp,
     signIn,
+    verifyEmail,
+    resendVerification,
     signOut,
     initAuth,
     theme,
@@ -227,6 +229,7 @@ export default function App() {
 
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
   const [aiPrompt, setAiPrompt] = useState('');
   
   // Spotlight modal state
@@ -1975,6 +1978,58 @@ export default function App() {
                       {authLoading ? 'Updating...' : 'Update Password'}
                     </button>
                   </form>
+                </>
+              )}
+
+              {authView === 'verify' && (
+                <>
+                  <h4 className="font-serif font-black text-xl text-txt-primary text-center mt-2">VERIFY YOUR EMAIL</h4>
+                  {authError && <div className="text-red-400 text-xs font-semibold text-center bg-red-500/10 p-2.5 rounded-lg border border-red-500/20">{authError}</div>}
+                  {authMessage && <div className="text-green-400 text-xs font-semibold text-center bg-green-500/10 p-2.5 rounded-lg border border-green-500/20">{authMessage}</div>}
+                  <p className="text-[11px] text-txt-muted text-center leading-relaxed">
+                    We sent a 6-digit code to <strong>{authEmail}</strong>. Enter it below to activate your account.
+                  </p>
+                  
+                  <form 
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      verifyEmail(authEmail, verificationCode);
+                    }} 
+                    className="flex flex-col gap-3 mt-2"
+                  >
+                    <input
+                      type="text"
+                      value={verificationCode}
+                      onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="6-digit verification code"
+                      className="bg-bg-primary border border-border-subtle rounded-xl px-4 py-3 text-center text-sm font-black tracking-widest text-txt-primary focus:outline-none focus:border-accent-amber"
+                      maxLength={6}
+                      required
+                    />
+                    <button
+                      type="submit"
+                      disabled={authLoading || verificationCode.length !== 6}
+                      className="py-3 bg-accent-amber text-[#0C0A09] rounded-xl text-xs font-bold uppercase tracking-wider mt-2 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {authLoading ? 'Verifying...' : 'Verify & Log In'}
+                    </button>
+                  </form>
+
+                  <div className="flex justify-between text-[10px] font-semibold text-txt-muted mt-3 uppercase tracking-wide px-1">
+                    <button 
+                      onClick={() => resendVerification(authEmail)} 
+                      disabled={authLoading}
+                      className="hover:text-accent-amber transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      Resend Code
+                    </button>
+                    <button 
+                      onClick={() => setAuthView('signin')} 
+                      className="hover:text-accent-amber transition-colors cursor-pointer"
+                    >
+                      Back to Sign In
+                    </button>
+                  </div>
                 </>
               )}
             </motion.div>

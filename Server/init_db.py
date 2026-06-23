@@ -54,6 +54,9 @@ def setup_schema(conn):
                 id SERIAL PRIMARY KEY,
                 email VARCHAR(255) UNIQUE NOT NULL,
                 password VARCHAR(255) NOT NULL,
+                is_verified BOOLEAN DEFAULT FALSE,
+                verification_code VARCHAR(6),
+                verification_expires_at TIMESTAMP WITH TIME ZONE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)

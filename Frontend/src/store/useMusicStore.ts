@@ -138,7 +138,7 @@ interface MusicState {
   authLoading: boolean;
   authError: string | null;
   showAuthModal: boolean;
-  authView: 'signin' | 'signup' | 'forgot' | 'reset';
+  authView: 'signin' | 'signup' | 'forgot' | 'reset' | 'verify';
   authMessage: string | null;
 
   // Navigation / Tabs
@@ -224,7 +224,7 @@ interface MusicState {
   setSearchQuery: (query: string) => void;
   setSelectedVibe: (vibe: string | null) => void;
   setShowAuthModal: (show: boolean) => void;
-  setAuthView: (view: 'signin' | 'signup' | 'forgot' | 'reset') => void;
+  setAuthView: (view: 'signin' | 'signup' | 'forgot' | 'reset' | 'verify') => void;
 
   // ITunes/Deezer data triggers
   fetchChart: () => Promise<void>;
@@ -251,6 +251,8 @@ interface MusicState {
   // Auth Operations
   signUp: (email: string, password: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
+  verifyEmail: (email: string, code: string) => Promise<void>;
+  resendVerification: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
   initAuth: () => void;
   sendPasswordResetEmail: (email: string) => Promise<void>;
@@ -888,6 +890,12 @@ export const useMusicStore = create<MusicState>((set, get) => {
         const data = await response.json();
         if (!response.ok || data.error) {
           set({ authError: data.error || 'Sign up failed', authLoading: false });
+        } else if (data.needs_verification) {
+          set({ 
+            authView: 'verify', 
+            authLoading: false, 
+            authMessage: 'Verification code sent to your email! Please enter it below.'
+          });
         } else {
           const user: AudioDripUser = { id: data.user.id, email: data.user.email };
           localStorage.setItem('audiodrip_user', JSON.stringify(user));
@@ -917,7 +925,15 @@ export const useMusicStore = create<MusicState>((set, get) => {
         });
         const data = await response.json();
         if (!response.ok || data.error) {
-          set({ authError: data.error || 'Invalid email or password', authLoading: false });
+          if (data.code === 'EMAIL_NOT_VERIFIED') {
+            set({ 
+              authView: 'verify', 
+              authError: 'Please verify your email address to continue.', 
+              authLoading: false 
+            });
+          } else {
+            set({ authError: data.error || 'Invalid email or password', authLoading: false });
+          }
         } else {
           const user: AudioDripUser = { id: data.user.id, email: data.user.email };
           localStorage.setItem('audiodrip_user', JSON.stringify(user));
@@ -936,6 +952,60 @@ export const useMusicStore = create<MusicState>((set, get) => {
         }
       } catch (err) {
         console.error("SignIn backend error:", err);
+        set({ authError: "Failed to connect to authentication server", authLoading: false });
+      }
+    },
+
+    verifyEmail: async (email, code) => {
+      set({ authLoading: true, authError: null, authMessage: null });
+      try {
+        const response = await fetch('/api/mobile/verify_email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, code })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+          set({ authError: data.error || 'Verification failed', authLoading: false });
+        } else {
+          const user: AudioDripUser = { id: data.user.id, email: data.user.email };
+          localStorage.setItem('audiodrip_user', JSON.stringify(user));
+          set({ user, authLoading: false, showAuthModal: false, authMessage: 'Email verified successfully!' });
+          // Fetch authenticated user's content
+          await get().fetchLikedSongs();
+          await get().fetchPlaylists();
+          await get().fetchLibrary();
+          await get().fetchPreferences();
+          await get().fetchChart();
+          
+          // Check preferences
+          const prefs = get().userPreferences;
+          if (prefs.languages.length === 0 && prefs.genres.length === 0) {
+            set({ showPrefsModal: true });
+          }
+        }
+      } catch (err) {
+        console.error("Verification error:", err);
+        set({ authError: "Failed to connect to authentication server", authLoading: false });
+      }
+    },
+
+    resendVerification: async (email) => {
+      set({ authLoading: true, authError: null, authMessage: null });
+      try {
+        const response = await fetch('/api/mobile/resend_verification', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+          set({ authError: data.error || 'Failed to resend code', authLoading: false });
+        } else {
+          set({ authMessage: data.message || 'A new verification code has been sent!', authLoading: false });
+        }
+      } catch (err) {
+        console.error("Resend verification error:", err);
         set({ authError: "Failed to connect to authentication server", authLoading: false });
       }
     },

@@ -6,6 +6,10 @@ from pathlib import Path
 from urllib.parse import quote
 from pydantic import BaseModel
 from typing import List, Optional
+import random
+from datetime import datetime, timedelta, timezone
+import smtplib
+from email.mime.text import MIMEText
 
 import requests
 import yt_dlp
@@ -30,7 +34,7 @@ async def lifespan(app: FastAPI):
     # Initialize PostgreSQL pool
     try:
         init_pool()
-        # Ensure user_preferences table exists (runtime migration)
+        # Ensure user_preferences table and users verification columns exist (runtime migration)
         try:
             with get_db_cursor(commit=True) as cursor:
                 cursor.execute("""
@@ -41,8 +45,11 @@ async def lifespan(app: FastAPI):
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
+                cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;")
+                cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_code VARCHAR(6);")
+                cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_expires_at TIMESTAMP WITH TIME ZONE;")
         except Exception as mig_err:
-            print(f"Warning: Could not create user_preferences table: {mig_err}")
+            print(f"Warning: Could not run database migrations: {mig_err}")
     except Exception as e:
         print(f"Warning: Database pool failed to initialize. Ensure init_db.py has run: {e}")
     yield
@@ -727,6 +734,67 @@ class AuthRequest(BaseModel):
     password: str
 
 
+class VerifyRequest(BaseModel):
+    email: str
+    code: str
+
+
+class ResendRequest(BaseModel):
+    email: str
+
+
+def generate_verification_code():
+    return "".join(random.choices("0123456789", k=6))
+
+
+def send_verification_email(email: str, code: str):
+    smtp_server = os.getenv("SMTP_SERVER", "").strip()
+    smtp_port = os.getenv("SMTP_PORT", "587").strip()
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
+    smtp_from = os.getenv("SMTP_FROM", "noreply@audiodrip.com").strip()
+
+    subject = "AudioDrip Verification Code"
+    body = f"""Hello,
+
+Thank you for registering at AudioDrip!
+Your email verification code is: {code}
+
+This code is valid for 1 hour.
+
+Best regards,
+AudioDrip Team"""
+
+    # Always print to console
+    print(f"\n========================================\n[EMAIL VERIFICATION] Verification code for {email} is: {code}\n========================================\n")
+
+    if not smtp_server or not smtp_user or not smtp_password:
+        print("[EMAIL VERIFICATION] SMTP credentials not fully configured. Code logged to console only.")
+        return True
+
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = smtp_from
+        msg['To'] = email
+
+        port = int(smtp_port) if smtp_port.isdigit() else 587
+        if port == 465:
+            server = smtplib.SMTP_SSL(smtp_server, port)
+        else:
+            server = smtplib.SMTP(smtp_server, port)
+            server.starttls()
+
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_from, [email], msg.as_string())
+        server.quit()
+        print(f"[EMAIL VERIFICATION] Email sent successfully to {email}")
+        return True
+    except Exception as e:
+        print(f"[EMAIL VERIFICATION] Error sending email to {email}: {e}")
+        return False
+
+
 @app.post("/api/mobile/signup")
 def mobile_signup(req: AuthRequest):
     email = req.email.strip().lower()
@@ -743,9 +811,23 @@ def mobile_signup(req: AuthRequest):
             if cursor.fetchone():
                 return JSONResponse({"error": "User already exists"}, status_code=400)
             
-            cursor.execute("INSERT INTO users (email, password) VALUES (%s, %s) RETURNING id, email;", (email, hashed_password))
+            code = generate_verification_code()
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+            
+            cursor.execute("""
+                INSERT INTO users (email, password, is_verified, verification_code, verification_expires_at) 
+                VALUES (%s, %s, FALSE, %s, %s) RETURNING id, email;
+            """, (email, hashed_password, code, expires_at))
             row = cursor.fetchone()
-            return JSONResponse({"status": "success", "user": {"id": str(row[0]), "email": row[1]}})
+            
+            send_verification_email(email, code)
+            
+            return JSONResponse({
+                "status": "success", 
+                "needs_verification": True,
+                "email": email,
+                "message": "Verification code sent to your email."
+            })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -762,16 +844,103 @@ def mobile_signin(req: AuthRequest):
     
     try:
         with get_db_cursor() as cursor:
-            cursor.execute("SELECT id, email, password FROM users WHERE email = %s;", (email,))
+            cursor.execute("SELECT id, email, password, is_verified FROM users WHERE email = %s;", (email,))
             row = cursor.fetchone()
             if not row:
                 return JSONResponse({"error": "Invalid email or password"}, status_code=400)
             
-            db_id, db_email, db_password = row
+            db_id, db_email, db_password, is_verified = row
             if db_password != hashed_password:
                 return JSONResponse({"error": "Invalid email or password"}, status_code=400)
                 
+            if not is_verified:
+                return JSONResponse({
+                    "error": "Email not verified",
+                    "code": "EMAIL_NOT_VERIFIED",
+                    "email": db_email
+                }, status_code=403)
+                
             return JSONResponse({"status": "success", "user": {"id": str(db_id), "email": db_email}})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mobile/verify_email")
+def verify_email(req: VerifyRequest):
+    email = req.email.strip().lower()
+    code = req.code.strip()
+    if not email or not code:
+        return JSONResponse({"error": "Email and verification code are required"}, status_code=400)
+        
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT id, verification_code, verification_expires_at, is_verified FROM users WHERE email = %s;", (email,))
+            row = cursor.fetchone()
+            if not row:
+                return JSONResponse({"error": "User not found"}, status_code=400)
+                
+            db_id, db_code, db_expires_at, is_verified = row
+            if is_verified:
+                return JSONResponse({
+                    "status": "success", 
+                    "message": "Email already verified", 
+                    "user": {"id": str(db_id), "email": email}
+                })
+                
+            if not db_code or db_code != code:
+                return JSONResponse({"error": "Invalid verification code"}, status_code=400)
+                
+            now = datetime.now(timezone.utc)
+            if db_expires_at and db_expires_at.tzinfo is None:
+                db_expires_at = db_expires_at.replace(tzinfo=timezone.utc)
+                
+            if db_expires_at and now > db_expires_at:
+                return JSONResponse({"error": "Verification code has expired. Please request a new one."}, status_code=400)
+                
+            cursor.execute("""
+                UPDATE users 
+                SET is_verified = TRUE, verification_code = NULL, verification_expires_at = NULL 
+                WHERE id = %s;
+            """, (db_id,))
+            
+            return JSONResponse({
+                "status": "success",
+                "message": "Email verified successfully!",
+                "user": {"id": str(db_id), "email": email}
+            })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mobile/resend_verification")
+def resend_verification(req: ResendRequest):
+    email = req.email.strip().lower()
+    if not email:
+        return JSONResponse({"error": "Email is required"}, status_code=400)
+        
+    try:
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT id, is_verified FROM users WHERE email = %s;", (email,))
+            row = cursor.fetchone()
+            if not row:
+                print(f"[EMAIL VERIFICATION] Resend requested for non-existent email: {email}")
+                return JSONResponse({"status": "success", "message": "If the account exists, a new code has been sent."})
+                
+            db_id, is_verified = row
+            if is_verified:
+                return JSONResponse({"error": "Email is already verified"}, status_code=400)
+                
+            code = generate_verification_code()
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+            
+            cursor.execute("""
+                UPDATE users 
+                SET verification_code = %s, verification_expires_at = %s 
+                WHERE id = %s;
+            """, (code, expires_at, db_id))
+            
+            send_verification_email(email, code)
+            return JSONResponse({"status": "success", "message": "A new verification code has been sent."})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
