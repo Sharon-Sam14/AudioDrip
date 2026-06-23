@@ -453,7 +453,7 @@ def extract_video_info(query_or_url: str, is_download: bool = False, song_id: st
         "noplaylist": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["ios", "android"]
+                "player_client": ["tv_downgraded", "ios", "android", "web_embedded"]
             }
         }
     }
