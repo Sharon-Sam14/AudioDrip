@@ -7,9 +7,11 @@ AudioDrip is a premium, highly animated music streaming and offline caching web 
 ## 🛠️ Technology Stack
 
 - **Frontend**: React 19, Vite, TypeScript, Tailwind CSS v4, Framer Motion, Lucide React
-- **Backend**: Python 3.13, FastAPI (lifespan manager, stream caching, YouTube stream proxying)
+- **Backend**: Python 3.13, FastAPI (lifespan manager, stream caching, YouTube stream proxying, custom file uploads)
 - **Database**: PostgreSQL (song catalog, behavior transitions, liked songs, playlists, users)
-- **Downloader**: yt-dlp (background threads)
+- **Music APIs**: Jamendo Music API (streaming/search), Internet Archive API (streaming/search), Spotify API (metadata search), LRCLIB (synced lyrics)
+- **AI Engine**: Groq API (LLaMA-powered chat drawer & dynamic playlists)
+- **Downloader**: yt-dlp (background threads for caching)
 
 ---
 
@@ -90,27 +92,44 @@ http://[YOUR_COMPUTER_IP]:8000
 
 | Feature | Description |
 |---|---|
-| 🎵 **Stream** | Real-time audio stream via yt-dlp + YouTube proxy |
-| 📥 **Offline Cache** | Downloads songs to local disk for zero-buffer playback |
-| 🎤 **Synced Lyrics** | Auto-scrolling time-synced lyrics via LRCLIB |
-| 📊 **Visualizer** | Canvas-based audio frequency visualizer (Bars / Orbit / Tape) |
-| 🤖 **AI Playlists** | Groq LLaMA-powered AI playlist generation from a text prompt |
-| ❤️ **Library** | Like songs, create playlists, manage offline cache |
-| 🔍 **Spotlight Search** | Cmd/Ctrl+K command-palette search with keyboard navigation |
-| 🌙 **Themes** | Obsidian Studio (dark) and Daylight Session (light) |
-| 🔐 **Auth** | Email + password user accounts with password reset |
+| 📁 **Local Uploads** | Upload audio files and custom cover arts to your library natively |
+| 🎵 **Jamendo Streaming** | Streams legal tracks directly from the Jamendo Music API |
+| 🏛️ **Archive Streaming** | Dynamically resolves and streams public domain MP3 audio from Internet Archive |
+| 📺 **YouTube Fallback** | Proxies and streams any global music via yt-dlp as a fallback |
+| 📥 **Offline Cache** | Automatically downloads audio in the background for zero-buffer offline playback |
+| 🎤 **Synced Lyrics** | Time-synced scrolling lyrics fetched dynamically from LRCLIB |
+| 📊 **Visualizer** | Interactive canvas-based audio visualizer (supporting Bars, Orbit, and Tape modes) |
+| 🤖 **AI Chat Assistant** | Sidebar sparkles tab opening a Groq LLaMA 3.1 chat drawer for music discussions |
+| 🪐 **Multi-Source Engine** | Parallel search combining Local DB, Jamendo, Internet Archive, and iTunes concurrently |
+| 🏷️ **Filter Chips & Badges** | Filter browse grids dynamically by source/vibe; distinct source badges rendered throughout |
+| ❤️ **Library & Playlists** | Personal track collections, custom playlists, and profile analytics |
+| 🌙 **Themes** | Modern premium HSL styling: Obsidian Studio (dark) and Daylight Session (light) |
+| 🔐 **Auth** | User account registrations, credentials validation, and custom email codes |
 
 ---
 
-## 🤖 Optional: AI Playlists (Groq)
+## 🤖 Optional API Configurations
 
-To enable AI playlist generation, add your free Groq API key to `Server/.env`:
+### 1. AI Playlists & Chat (Groq)
+To enable the AI playlist builder and the side chat assistant, add your free Groq API key to `Server/.env`:
 ```env
 GROQ_API_KEY=gsk_your_key_here
 ```
-Get a free key at [console.groq.com](https://console.groq.com).
+Get a key at [console.groq.com](https://console.groq.com). (Without it, local keyword matching is used).
 
-Without this key, a local keyword-matching fallback is used automatically.
+### 2. Legal Music Streaming (Jamendo)
+By default, the application is pre-configured with a demo Jamendo Client ID (`2f01fa9c`). To use your own API developer account, set it in `Server/.env`:
+```env
+JAMENDO_CLIENT_ID=your_client_id_here
+```
+
+### 3. Metadata Lookup (Spotify)
+To enable Spotify metadata lookups during search queries, append your Spotify developer client credentials:
+```env
+SPOTIFY_CLIENT_ID=your_spotify_id_here
+SPOTIFY_CLIENT_SECRET=your_spotify_secret_here
+```
+Create a developer application at [developer.spotify.com](https://developer.spotify.com) to generate keys.
 
 ---
 
