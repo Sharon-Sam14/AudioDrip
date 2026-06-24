@@ -167,15 +167,13 @@ npm run build
 
 ## 🌐 Cloud Deployment (Free Tier Setup)
 
-This project is configured to deploy fully for free using **Supabase** (for the database) and **Render** (for the unified backend & frontend server). 
+This project is configured to deploy fully for free using **Neon** (for the serverless database) and **Render** (for the unified backend & frontend server). 
 
-### 1. Database Setup (Supabase)
-1. Sign up for a free account at [Supabase](https://supabase.com).
-2. Create a new project (e.g., `AudioDrip`) and set a secure database password.
-3. Once the database finishes provisioning, navigate to **Project Settings** -> **Database**.
-4. Scroll down to the **Connection string** section, select **URI**, and copy the string.
-   - It will look similar to: `postgresql://postgres.[YOUR-PROJECT-REF]:[YOUR-PASSWORD]@aws-0-us-east-1.pooler.supabase.com:5432/postgres`
-   - *Note: Replace `[YOUR-PASSWORD]` with the database password you chose.*
+### 1. Database Setup (Neon)
+1. Sign up for a free account at [Neon](https://neon.tech).
+2. Create a new project (e.g., `AudioDrip`) and choose the default PostgreSQL settings.
+3. Once the project is created, copy the **Connection string** (URI format) from your project dashboard.
+   - It will look similar to: `postgresql://neondb_owner:[PASSWORD]@[HOST]/neondb?sslmode=require`
 
 ### 2. Application Deployment (Render)
 1. Sign up for a free account at [Render](https://render.com).
@@ -185,11 +183,11 @@ This project is configured to deploy fully for free using **Supabase** (for the 
    - **Name**: `audiodrip`
    - **Language**: `Python`
    - **Branch**: `main`
-   - **Root Directory**: `Server` *(Important: Render must search within the Server subdirectory)*
+   - **Root Directory**: `Server` *(Important: Render must run commands within the Server subdirectory)*
    - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `python init_db.py && python app.py` *(This automatically configures the database schema on Supabase, migrates initial data, and boots the FastAPI server)*
+   - **Start Command**: `python init_db.py && python app.py` *(This automatically configures the database schema on Neon, migrates initial data, and boots the FastAPI server)*
 5. Expand the **Environment Variables** section and add:
-   - `DATABASE_URL`: *The Supabase Connection String you copied in Step 1.*
+   - `DATABASE_URL`: *The Neon Connection String you copied in Step 1.*
    - `GROQ_API_KEY`: *(Optional) Your Groq API key for AI playlists.*
 6. Click **Deploy Web Service**.
 
