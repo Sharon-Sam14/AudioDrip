@@ -38,21 +38,52 @@ def get_pool():
 def get_db_connection():
     pool = get_pool()
     conn = pool.getconn()
+    
+    # If the connection is closed, discard it and get a fresh one.
+    if conn.closed != 0:
+        try:
+            pool.putconn(conn, close=True)
+        except Exception:
+            pass
+        conn = pool.getconn()
+        
     try:
         yield conn
     finally:
-        pool.putconn(conn)
+        # Discard the connection if it became closed/broken during use
+        if conn.closed != 0:
+            try:
+                pool.putconn(conn, close=True)
+            except Exception:
+                pass
+        else:
+            try:
+                pool.putconn(conn)
+            except Exception:
+                pass
 
 @contextmanager
 def get_db_cursor(commit=False):
     with get_db_connection() as conn:
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
+        except Exception as e:
+            raise e
+            
         try:
             yield cursor
             if commit:
-                conn.commit()
+                if conn.closed == 0:
+                    conn.commit()
         except Exception as e:
-            conn.rollback()
+            if conn.closed == 0:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             raise e
         finally:
-            cursor.close()
+            try:
+                cursor.close()
+            except Exception:
+                pass

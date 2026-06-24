@@ -444,17 +444,56 @@ def build_up_next_response(song_id, limit=10, user_id: str = "anonymous"):
     return result
 
 
-def get_audio_from_invidious(query: str):
-    instances = [
+INVIDIOUS_CACHE = {"instances": [], "last_fetched": 0.0}
+
+def get_invidious_instances():
+    now = time.time()
+    # Cache for 1 hour (3600 seconds)
+    if INVIDIOUS_CACHE["instances"] and (now - INVIDIOUS_CACHE["last_fetched"] < 3600):
+        return INVIDIOUS_CACHE["instances"]
+        
+    default_instances = [
+        "https://inv.nadeko.net",
         "https://invidious.projectsegfau.lt",
         "https://invidious.privacydev.net",
+        "https://yewtu.be",
         "https://iv.ggtyler.dev",
         "https://invidious.lunar.icu",
-        "https://yewtu.be",
         "https://inv.tux.im",
         "https://invidious.flokinet.to",
-        "https://inv.nadeko.net",
     ]
+    
+    try:
+        print("[FALLBACK] Fetching live public Invidious instances from api.invidious.io...")
+        r = requests.get("https://api.invidious.io/instances.json", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            instances = []
+            for item in data:
+                # Structure is [[domain, details_dict], ...]
+                if isinstance(item, list) and len(item) >= 2:
+                    domain = item[0]
+                    details = item[1]
+                    uri = details.get("uri")
+                    monitor = details.get("monitor")
+                    # Use instances that are HTTPS, have a URI, and monitor shows they are not down
+                    if uri and monitor and not monitor.get("down", False) and monitor.get("uptime", 0) > 95:
+                        instances.append(uri.rstrip('/'))
+            if instances:
+                print(f"[FALLBACK] Successfully fetched {len(instances)} active Invidious instances.")
+                INVIDIOUS_CACHE["instances"] = instances
+                INVIDIOUS_CACHE["last_fetched"] = now
+                return instances
+    except Exception as e:
+        print(f"[FALLBACK] Failed to fetch live Invidious instances: {e}. Using defaults.")
+        
+    INVIDIOUS_CACHE["instances"] = default_instances
+    INVIDIOUS_CACHE["last_fetched"] = now
+    return default_instances
+
+
+def get_audio_from_invidious(query: str):
+    instances = get_invidious_instances()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -462,30 +501,38 @@ def get_audio_from_invidious(query: str):
         instance = instance.rstrip('/')
         try:
             search_url = f"{instance}/api/v1/search"
+            print(f"[FALLBACK] Querying Invidious search: {search_url} for '{query}'")
             r = requests.get(search_url, params={"q": query, "type": "video"}, headers=headers, timeout=5)
             if r.status_code != 200:
+                print(f"[FALLBACK] Invidious search failed for {instance} with status code: {r.status_code}")
                 continue
             results = r.json()
             if not results or not isinstance(results, list):
+                print(f"[FALLBACK] Invidious search returned empty or invalid results for {instance}")
                 continue
             video_id = results[0].get("videoId")
             if not video_id:
+                print(f"[FALLBACK] Invidious search result lacks videoId on {instance}")
                 continue
             
             video_url = f"{instance}/api/v1/videos/{video_id}"
+            print(f"[FALLBACK] Fetching Invidious video streams from: {video_url}")
             r_video = requests.get(video_url, headers=headers, timeout=5)
             if r_video.status_code != 200:
+                print(f"[FALLBACK] Invidious video fetch failed for {instance} with status code: {r_video.status_code}")
                 continue
             video_data = r_video.json()
             adaptive = video_data.get("adaptiveFormats", [])
             audio_formats = [f for f in adaptive if f.get("type", "").startswith("audio/")]
             if not audio_formats:
+                print(f"[FALLBACK] No audio streams found in adaptiveFormats on {instance}")
                 continue
             
             audio_formats.sort(key=lambda x: int(x.get("bitrate") or 0), reverse=True)
             best_audio = audio_formats[0]
             stream_url = best_audio.get("url")
             if not stream_url:
+                print(f"[FALLBACK] Best audio format lacks stream URL on {instance}")
                 continue
             
             if "local=true" not in stream_url:
@@ -494,6 +541,7 @@ def get_audio_from_invidious(query: str):
                 else:
                     stream_url += "?local=true"
             
+            print(f"[FALLBACK] Invidious success: found stream URL via {instance}")
             return {
                 "source": "invidious",
                 "url": stream_url,
@@ -501,7 +549,8 @@ def get_audio_from_invidious(query: str):
                 "videoId": video_id,
                 "instance": instance
             }
-        except Exception:
+        except Exception as e:
+            print(f"[FALLBACK] Invidious fallback failed on {instance}: {e}")
             continue
     return None
 
@@ -521,33 +570,42 @@ def get_audio_from_piped(query: str):
         instance = instance.rstrip('/')
         try:
             search_url = f"{instance}/search"
+            print(f"[FALLBACK] Querying Piped search: {search_url} for '{query}'")
             r = requests.get(search_url, params={"q": query, "filter": "videos"}, headers=headers, timeout=5)
             if r.status_code != 200:
+                print(f"[FALLBACK] Piped search failed for {instance} with status code: {r.status_code}")
                 continue
             data = r.json()
             items = data.get("items", [])
             if not items:
+                print(f"[FALLBACK] Piped search returned no items on {instance}")
                 continue
             video = items[0]
             video_url = video.get("url", "")
             if "v=" not in video_url:
+                print(f"[FALLBACK] Piped search result lacks video ID on {instance}")
                 continue
             video_id = video_url.split("v=")[-1]
             if not video_id:
+                print(f"[FALLBACK] Empty video ID extracted on {instance}")
                 continue
             
             stream_url = f"{instance}/streams/{video_id}"
+            print(f"[FALLBACK] Fetching Piped streams from: {stream_url}")
             r_stream = requests.get(stream_url, headers=headers, timeout=5)
             if r_stream.status_code != 200:
+                print(f"[FALLBACK] Piped stream fetch failed for {instance} with status code: {r_stream.status_code}")
                 continue
             stream_data = r_stream.json()
             audio_streams = stream_data.get("audioStreams", [])
             if not audio_streams:
+                print(f"[FALLBACK] No audio streams found in Piped response on {instance}")
                 continue
             
             best_audio = audio_streams[0]
             url = best_audio.get("url")
             if url:
+                print(f"[FALLBACK] Piped success: found stream URL via {instance}")
                 return {
                     "source": "piped",
                     "url": url,
@@ -555,7 +613,8 @@ def get_audio_from_piped(query: str):
                     "videoId": video_id,
                     "instance": instance
                 }
-        except Exception:
+        except Exception as e:
+            print(f"[FALLBACK] Piped fallback failed on {instance}: {e}")
             continue
     return None
 
