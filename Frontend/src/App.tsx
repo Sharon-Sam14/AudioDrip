@@ -18,6 +18,8 @@ import { MagneticButton } from './components/MagneticButton';
 import { TrackCard } from './components/TrackCard';
 import { SpotlightSearch } from './components/SpotlightSearch';
 import { LyricsScroller } from './components/LyricsScroller';
+import { UploadModal } from './components/UploadModal';
+import { AIAssistantDrawer } from './components/AIAssistantDrawer';
 
 const VIBES = [
   { id: 'all', name: '🪐 All Vibes', genres: [] },
@@ -130,6 +132,7 @@ export default function App() {
     chartSongs,
     librarySongs,
     likedSongs,
+    uploadedSongs,
     playlists,
     selectedPlaylist,
     playlistSongs,
@@ -140,6 +143,7 @@ export default function App() {
     showCreateModal,
     newPlaylistName,
     showAddModal,
+    showUploadModal,
     songToAddToPlaylist,
     
     // Search
@@ -157,6 +161,7 @@ export default function App() {
     history,
     isSidebarExpanded,
     isBoothOpen,
+    isAIPanelOpen,
     viewMode,
 
     // Actions
@@ -166,13 +171,16 @@ export default function App() {
     setNewPlaylistName,
     setShowCreateModal,
     setShowAddModal,
+    setShowUploadModal,
     setSongToAddToPlaylist,
     setSearchQuery,
     setSelectedVibe,
+    setIsAIPanelOpen,
     
     fetchChart,
     fetchLibrary,
     fetchLikedSongs,
+    fetchUploadedSongs,
     fetchPlaylists,
     fetchPlaylistSongs,
     handleCreatePlaylist,
@@ -262,6 +270,7 @@ export default function App() {
     fetchChart();
     fetchLibrary();
     fetchLikedSongs();
+    fetchUploadedSongs();
     fetchPlaylists();
 
     // Mock initial database loading for 1.2 seconds to show off elegant skeleton screens
@@ -270,7 +279,7 @@ export default function App() {
     }, 1200);
 
     return () => clearTimeout(timer);
-  }, [initAuth, fetchChart, fetchLibrary, fetchLikedSongs, fetchPlaylists]);
+  }, [initAuth, fetchChart, fetchLibrary, fetchLikedSongs, fetchUploadedSongs, fetchPlaylists]);
 
 
   // Listen to Cmd/Ctrl + K to toggle spotlight search modal
@@ -300,6 +309,8 @@ export default function App() {
     }
   }, [showPrefsModal, showSettingsModal, userPreferences]);
 
+  const [selectedSource, setSelectedSource] = useState<'all' | 'uploaded' | 'jamendo' | 'archive' | 'youtube'>('all');
+
   // Vibe Filter implementation
   const filterSongsByVibe = (list: Track[]) => {
     if (!selectedVibe || selectedVibe === 'all') return list;
@@ -312,8 +323,13 @@ export default function App() {
     });
   };
 
+  const filterSongsBySource = (list: Track[]) => {
+    if (selectedSource === 'all') return list;
+    return list.filter(song => song.source === selectedSource);
+  };
+
   // Maps backend song lists to track types
-  const mappedChartTracks = filterSongsByVibe(chartSongs.map(songToTrack));
+  const mappedChartTracks = filterSongsBySource(filterSongsByVibe(chartSongs.map(songToTrack)));
 
   // Apply preference-based sort: preference-matching songs bubble to top
   const sortedChartTracks = [...mappedChartTracks].sort((a, b) => {
@@ -323,6 +339,7 @@ export default function App() {
   });
   const mappedLikedTracks = likedSongs.map(songToTrack);
   const mappedLibraryTracks = librarySongs.map(songToTrack);
+  const mappedUploadedTracks = uploadedSongs.map(songToTrack);
   const mappedPlaylistTracks = playlistSongs.map(songToTrack);
 
   // Determine current active track details
@@ -398,9 +415,10 @@ export default function App() {
             {[
               { id: 'discover', name: 'Discover', icon: Music, action: () => { setActiveTab('discover'); setSelectedPlaylist(null); } },
               { id: 'search', name: 'Search (⌘K)', icon: Search, action: () => setIsSearchOpen(true) },
-              { id: 'library', name: 'Library', icon: Library, action: () => { setActiveTab('library'); setSelectedPlaylist(null); } }
+              { id: 'library', name: 'Library', icon: Library, action: () => { setActiveTab('library'); setSelectedPlaylist(null); } },
+              { id: 'ai_helper', name: 'AI Helper', icon: Sparkles, action: () => setIsAIPanelOpen(!isAIPanelOpen) }
             ].map((item) => {
-              const isActive = activeTab === item.id;
+              const isActive = item.id === 'ai_helper' ? isAIPanelOpen : activeTab === item.id;
               const Icon = item.icon;
               return (
                 <button
@@ -671,6 +689,36 @@ export default function App() {
                     </div>
                   </section>
 
+                  {/* SOURCE FILTER CHIPS */}
+                  <section className="flex flex-col gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-serif italic text-sm text-accent-sienna font-bold">01.5</span>
+                      <h4 className="text-[10px] font-black text-txt-secondary uppercase tracking-widest">Filter by Source</h4>
+                    </div>
+                    
+                    <div className="flex flex-wrap gap-2.5">
+                      {[
+                        { id: 'all', name: '🪐 All Sources' },
+                        { id: 'uploaded', name: '📁 Uploaded' },
+                        { id: 'jamendo', name: '🎵 Jamendo' },
+                        { id: 'archive', name: '🏛️ Archive' },
+                        { id: 'youtube', name: '📺 YouTube' }
+                      ].map((src) => (
+                        <button
+                          key={src.id}
+                          onClick={() => setSelectedSource(src.id as any)}
+                          className={`px-4 py-2 rounded-full border text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                            selectedSource === src.id
+                              ? 'bg-accent-amber border-accent-amber text-[#0C0A09]'
+                              : 'bg-bg-secondary border-border-subtle text-txt-secondary hover:text-txt-primary hover:border-border-warm/30'
+                          }`}
+                        >
+                          {src.name}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+
                   {/* 2. MUSIC GRIDS FLOOR */}
                   <section className="flex flex-col gap-6">
                     <div className="flex items-center justify-between border-b border-border-subtle/50 pb-3">
@@ -905,6 +953,65 @@ export default function App() {
                       </motion.div>
                     </section>
                   )}
+
+                  {/* 4. RECENTLY UPLOADED HORIZONTAL ROLL */}
+                  {uploadedSongs.length > 0 && (
+                    <section className="flex flex-col gap-4">
+                      <div className="flex items-center gap-3 border-b border-border-subtle/50 pb-2">
+                        <span className="font-serif italic text-lg text-accent-amber font-bold">04</span>
+                        <h3 className="font-serif font-black text-2xl uppercase tracking-wider text-txt-primary">
+                          Recently Uploaded
+                        </h3>
+                      </div>
+
+                      <motion.div 
+                        variants={{
+                          hidden: { opacity: 0 },
+                          visible: {
+                            opacity: 1,
+                            transition: {
+                              staggerChildren: 0.05
+                            }
+                          }
+                        }}
+                        initial="hidden"
+                        animate="visible"
+                        className="flex gap-4 overflow-x-auto py-2 custom-scrollbar"
+                        style={{ 
+                          WebkitMaskImage: 'linear-gradient(to right, rgba(0,0,0,1) 85%, rgba(0,0,0,0) 100%)',
+                          maskImage: 'linear-gradient(to right, rgba(0,0,0,1) 85%, rgba(0,0,0,0) 100%)' 
+                        }}
+                      >
+                        {uploadedSongs.map(songToTrack).map((track) => (
+                          <motion.div
+                            key={track.id}
+                            variants={{
+                              hidden: { opacity: 0, y: 10 },
+                              visible: { opacity: 1, y: 0 }
+                            }}
+                            onClick={() => play(track)}
+                            className="group flex-shrink-0 w-32 cursor-pointer flex flex-col gap-2"
+                          >
+                            {/* Portrait ratio slab image */}
+                            <div className="relative aspect-[3/4] rounded-xl overflow-hidden bg-[#181615] border border-border-subtle">
+                              <img src={track.coverUrl || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600"} className="w-full h-full object-cover group-hover:scale-104 transition-all duration-300" alt="" />
+                              <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                <Play className="w-6 h-6 text-[#FAF7F4] fill-current" />
+                              </div>
+                            </div>
+                            <div className="text-left">
+                              <h5 className="font-serif font-bold text-[12px] text-txt-primary line-clamp-1">
+                                {track.title}
+                              </h5>
+                              <p className="text-[10px] font-medium text-txt-muted truncate mt-0.5">
+                                {track.artist}
+                              </p>
+                            </div>
+                          </motion.div>
+                        ))}
+                      </motion.div>
+                    </section>
+                  )}
                 </>
               )}
 
@@ -922,7 +1029,7 @@ export default function App() {
                       </h3>
                     </div>
 
-                    <div className="flex gap-2.5">
+                     <div className="flex gap-2.5">
                       <button
                         onClick={() => { setLibrarySubTab('liked'); setSelectedPlaylist(null); }}
                         className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
@@ -942,6 +1049,16 @@ export default function App() {
                         }`}
                       >
                         Offline Cache ({mappedLibraryTracks.length})
+                      </button>
+                      <button
+                        onClick={() => { setLibrarySubTab('uploaded'); setSelectedPlaylist(null); }}
+                        className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                          librarySubTab === 'uploaded' && !selectedPlaylist
+                            ? 'bg-accent-amber/10 border-accent-amber text-accent-amber'
+                            : 'bg-bg-secondary border-border-subtle text-txt-secondary hover:text-txt-primary'
+                        }`}
+                      >
+                        Uploaded ({mappedUploadedTracks.length})
                       </button>
                       <button
                         onClick={() => { setLibrarySubTab('playlists'); }}
@@ -1060,6 +1177,47 @@ export default function App() {
                           )}
                         </div>
                       )}
+
+                        {/* UPLOADED SONGS LIST */}
+                        {librarySubTab === 'uploaded' && (
+                          <div className="flex flex-col gap-6">
+                            {/* Upload Track banner */}
+                            <div className="flex items-center gap-4 justify-between bg-bg-secondary p-5 border border-border-subtle rounded-2xl">
+                              <div>
+                                <h4 className="font-serif font-black text-lg text-txt-primary">My Uploaded Tracks</h4>
+                                <p className="text-xs text-txt-muted mt-1">Upload files from your device to stream them anywhere.</p>
+                              </div>
+                              
+                              <button
+                                onClick={() => setShowUploadModal(true)}
+                                className="px-4 py-2.5 rounded-xl bg-accent-amber text-[#0C0A09] text-xs font-bold uppercase tracking-wider transition-all cursor-pointer flex items-center gap-2"
+                              >
+                                <Music className="w-4 h-4" /> Upload Track
+                              </button>
+                            </div>
+
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                              {mappedUploadedTracks.length === 0 ? (
+                                <div className="col-span-full py-12 text-center text-txt-muted text-xs font-semibold">
+                                  No uploaded tracks yet. Upload your first track above.
+                                </div>
+                              ) : (
+                                mappedUploadedTracks.map((track) => (
+                                  <TrackCard
+                                    key={track.id}
+                                    track={track}
+                                    isPlaying={isPlaying}
+                                    isCurrent={activeTrackObj?.id === track.id}
+                                    onPlay={play}
+                                    onToggleLike={onToggleLike}
+                                    onCache={handleCache}
+                                    onAddToPlaylist={handleAddToPlaylist}
+                                  />
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        )}
 
                       {/* PLAYLISTS COLLECTION */}
                       {librarySubTab === 'playlists' && (
@@ -1187,6 +1345,33 @@ export default function App() {
                   <p className="text-xs font-semibold text-txt-secondary mt-1 text-center line-clamp-1 w-full px-2">
                     {activeTrackObj.artist}
                   </p>
+                  <div className="flex items-center gap-1.5 mt-2 flex-wrap justify-center">
+                    {activeTrackObj.source === 'uploaded' && (
+                      <span className="px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[8px] font-extrabold uppercase tracking-wide">
+                        Uploaded
+                      </span>
+                    )}
+                    {activeTrackObj.source === 'jamendo' && (
+                      <span className="px-1.5 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[8px] font-extrabold uppercase tracking-wide">
+                        Jamendo
+                      </span>
+                    )}
+                    {activeTrackObj.source === 'archive' && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-extrabold uppercase tracking-wide">
+                        Archive
+                      </span>
+                    )}
+                    {activeTrackObj.source === 'youtube' && (
+                      <span className="px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 text-[8px] font-extrabold uppercase tracking-wide">
+                        YouTube
+                      </span>
+                    )}
+                    {activeTrackObj.cached && (
+                      <span className="px-1.5 py-0.5 rounded bg-green-500/10 border border-green-500/20 text-green-400 text-[8px] font-extrabold uppercase tracking-wide">
+                        Cached
+                      </span>
+                    )}
+                  </div>
 
                   {/* Like + Add to Playlist actions */}
                   <div className="flex items-center gap-3 mt-4">
@@ -1420,7 +1605,14 @@ export default function App() {
                 
                 {/* Metadata details */}
                 <div className="text-left min-w-0 flex-1">
-                  <h5 className="font-serif font-black text-sm text-txt-primary truncate">{activeTrackObj.title}</h5>
+                  <h5 className="font-serif font-black text-sm text-txt-primary truncate flex items-center gap-1.5">
+                    {activeTrackObj.title}
+                    {activeTrackObj.source === 'uploaded' && <span className="px-1 py-0.2 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[8px] font-extrabold uppercase">Uploaded</span>}
+                    {activeTrackObj.source === 'jamendo' && <span className="px-1 py-0.2 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[8px] font-extrabold uppercase">Jamendo</span>}
+                    {activeTrackObj.source === 'archive' && <span className="px-1 py-0.2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-extrabold uppercase">Archive</span>}
+                    {activeTrackObj.source === 'youtube' && <span className="px-1 py-0.2 rounded bg-red-500/10 border border-red-500/20 text-red-400 text-[8px] font-extrabold uppercase">YouTube</span>}
+                    {activeTrackObj.cached && <span className="px-1 py-0.2 rounded bg-green-500/10 border border-green-500/20 text-green-400 text-[8px] font-extrabold uppercase">Cached</span>}
+                  </h5>
                   <p className="text-[10px] font-semibold text-txt-muted truncate mt-0.5">{activeTrackObj.artist}</p>
                 </div>
               </div>
@@ -2191,6 +2383,9 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      <UploadModal isOpen={showUploadModal} onClose={() => setShowUploadModal(false)} />
+      <AIAssistantDrawer isOpen={isAIPanelOpen} onClose={() => setIsAIPanelOpen(false)} />
     </div>
   );
 }

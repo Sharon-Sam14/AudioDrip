@@ -426,7 +426,14 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
 
                             {/* Info */}
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-bold truncate text-txt-primary">{track.title}</p>
+                              <p className="text-sm font-bold truncate text-txt-primary flex items-center gap-1.5 flex-wrap">
+                                {track.title}
+                                {track.source === 'uploaded' && <span className="px-1 py-0.2 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[8px] font-extrabold uppercase">Uploaded</span>}
+                                {track.source === 'jamendo' && <span className="px-1 py-0.2 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[8px] font-extrabold uppercase">Jamendo</span>}
+                                {track.source === 'archive' && <span className="px-1 py-0.2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-extrabold uppercase">Archive</span>}
+                                {track.source === 'youtube' && <span className="px-1 py-0.2 rounded bg-red-500/10 border border-red-500/20 text-red-400 text-[8px] font-extrabold uppercase">YouTube</span>}
+                                {track.cached && <span className="px-1 py-0.2 rounded bg-green-500/10 border border-green-500/20 text-green-400 text-[8px] font-extrabold uppercase">Cached</span>}
+                              </p>
                               <p className="text-[11px] font-medium truncate text-txt-muted mt-0.5">{track.artist}</p>
                             </div>
 
@@ -542,7 +549,14 @@ export const SpotlightSearch: React.FC<SpotlightSearchProps> = ({
                                   <img src={track.coverUrl} className="w-full h-full object-cover" alt="" />
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  <p className="text-[12px] font-bold truncate text-txt-primary">{track.title}</p>
+                                  <p className="text-[12px] font-bold truncate text-txt-primary flex items-center gap-1.5 flex-wrap">
+                                    {track.title}
+                                    {track.source === 'uploaded' && <span className="px-1 py-0.2 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[8px] font-extrabold uppercase">Uploaded</span>}
+                                    {track.source === 'jamendo' && <span className="px-1 py-0.2 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[8px] font-extrabold uppercase">Jamendo</span>}
+                                    {track.source === 'archive' && <span className="px-1 py-0.2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-extrabold uppercase">Archive</span>}
+                                    {track.source === 'youtube' && <span className="px-1 py-0.2 rounded bg-red-500/10 border border-red-500/20 text-red-400 text-[8px] font-extrabold uppercase">YouTube</span>}
+                                    {track.cached && <span className="px-1 py-0.2 rounded bg-green-500/10 border border-green-500/20 text-green-400 text-[8px] font-extrabold uppercase">Cached</span>}
+                                  </p>
                                   <p className="text-[10px] font-medium truncate text-txt-muted">{track.artist}</p>
                                 </div>
                                 <span className="text-[10px] font-bold text-txt-muted">

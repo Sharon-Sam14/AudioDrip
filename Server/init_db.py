@@ -75,13 +75,17 @@ def setup_schema(conn):
                 genre VARCHAR(100) DEFAULT 'Music',
                 tempo DOUBLE PRECISION,
                 energy DOUBLE PRECISION,
+                source VARCHAR(50) DEFAULT 'youtube',
+                file_path VARCHAR(255),
                 last_played_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
         
-        # Ensure embedding column exists
+        # Ensure embedding and source/file_path columns exist
         cursor.execute("ALTER TABLE songs ADD COLUMN IF NOT EXISTS embedding DOUBLE PRECISION[];")
+        cursor.execute("ALTER TABLE songs ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'youtube';")
+        cursor.execute("ALTER TABLE songs ADD COLUMN IF NOT EXISTS file_path VARCHAR(255);")
         
         # Index on last_played_at for faster eviction lookups
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_songs_last_played ON songs(last_played_at DESC);")

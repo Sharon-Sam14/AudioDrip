@@ -189,6 +189,33 @@ export const TrackCard: React.FC<TrackCardProps> = ({
           <p className="text-[11px] font-medium text-txt-secondary line-clamp-1 mt-0.5">
             {track.artist}
           </p>
+          <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+            {track.source === 'uploaded' && (
+              <span className="px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[8px] font-extrabold uppercase tracking-wide">
+                Uploaded
+              </span>
+            )}
+            {track.source === 'jamendo' && (
+              <span className="px-1.5 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[8px] font-extrabold uppercase tracking-wide">
+                Jamendo
+              </span>
+            )}
+            {track.source === 'archive' && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-extrabold uppercase tracking-wide">
+                Archive
+              </span>
+            )}
+            {track.source === 'youtube' && (
+              <span className="px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 text-[8px] font-extrabold uppercase tracking-wide">
+                YouTube
+              </span>
+            )}
+            {track.cached && (
+              <span className="px-1.5 py-0.5 rounded bg-green-500/10 border border-green-500/20 text-green-400 text-[8px] font-extrabold uppercase tracking-wide">
+                Cached
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center justify-between mt-2">

@@ -14,7 +14,8 @@ from email.mime.text import MIMEText
 import requests
 import yt_dlp
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, BackgroundTasks
+import uuid
+from fastapi import FastAPI, Request, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -48,6 +49,8 @@ async def lifespan(app: FastAPI):
                 cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;")
                 cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_code VARCHAR(6);")
                 cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_expires_at TIMESTAMP WITH TIME ZONE;")
+                cursor.execute("ALTER TABLE songs ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'youtube';")
+                cursor.execute("ALTER TABLE songs ADD COLUMN IF NOT EXISTS file_path VARCHAR(255);")
         except Exception as mig_err:
             print(f"Warning: Could not run database migrations: {mig_err}")
     except Exception as e:
@@ -78,8 +81,13 @@ DATA_DIR = BASE_DIR / "data"
 CACHE_DIR = BASE_DIR / "song_cache"
 CACHE_LIMIT_BYTES = 600 * 1024 * 1024
 
+UPLOADS_DIR = BASE_DIR / "uploads"
+
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount("/api/mobile/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 executor = ThreadPoolExecutor(max_workers=2)
 
@@ -163,11 +171,132 @@ def _itunes_to_song(item):
     }
 
 
+def search_local_db(q: str):
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy, source, file_path 
+                FROM songs 
+                WHERE title ILIKE %s OR artist ILIKE %s OR album ILIKE %s OR genre ILIKE %s
+                ORDER BY last_played_at DESC
+                LIMIT 25;
+            """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        print("Local DB search failed:", e)
+        return []
+
+def search_jamendo(q: str):
+    client_id = os.getenv("JAMENDO_CLIENT_ID", "2f01fa9c")
+    if not client_id:
+        return []
+    try:
+        r = requests.get("https://api.jamendo.com/v3.0/tracks/", params={
+            "client_id": client_id,
+            "format": "json",
+            "search": q,
+            "limit": 15
+        }, timeout=5)
+        if r.status_code == 200:
+            results = r.json().get("results", [])
+            songs = []
+            for item in results:
+                tags = item.get("musicgenre_tags", [])
+                genre = tags[0] if tags else "Jamendo"
+                song_id = f"jamendo_{item.get('id')}"
+                songs.append({
+                    "id": song_id,
+                    "title": item.get("name"),
+                    "artist": item.get("artist_name"),
+                    "artist_id": 0,
+                    "album": item.get("album_name") or "Jamendo Album",
+                    "cover": item.get("image") or "",
+                    "cover_xl": item.get("image") or "",
+                    "duration": int(item.get("duration") or 0),
+                    "genre": genre,
+                    "source": "jamendo",
+                    "file_path": item.get("audio")
+                })
+            return songs
+    except Exception as e:
+        print(f"Jamendo search failed: {e}")
+    return []
+
+def search_archive(q: str):
+    try:
+        url = "https://archive.org/advancedsearch.php"
+        query_str = f'(title:({q}) OR creator:({q})) AND mediatype:(audio)'
+        params = {
+            "q": query_str,
+            "fl[]": ["identifier", "title", "creator", "album", "format", "length"],
+            "rows": 15,
+            "output": "json"
+        }
+        r = requests.get(url, params=params, timeout=5)
+        if r.status_code == 200:
+            docs = r.json().get("response", {}).get("docs", [])
+            songs = []
+            for doc in docs:
+                ident = doc.get("identifier")
+                if not ident:
+                    continue
+                creator = doc.get("creator")
+                artist = creator[0] if isinstance(creator, list) else (creator or "Internet Archive")
+                album = doc.get("album")
+                album_str = album[0] if isinstance(album, list) else (album or "Archive")
+                
+                length_str = doc.get("length", "0")
+                duration = 0
+                if length_str:
+                    try:
+                        if ":" in str(length_str):
+                            parts = str(length_str).split(":")
+                            if len(parts) == 2:
+                                duration = int(parts[0]) * 60 + int(float(parts[1]))
+                            elif len(parts) == 3:
+                                duration = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(float(parts[2]))
+                        else:
+                            duration = int(float(length_str))
+                    except Exception:
+                        pass
+                        
+                song_id = f"archive_{ident}"
+                songs.append({
+                    "id": song_id,
+                    "title": doc.get("title") or ident,
+                    "artist": artist,
+                    "artist_id": 0,
+                    "album": album_str,
+                    "cover": f"https://archive.org/services/img/{ident}",
+                    "cover_xl": f"https://archive.org/services/img/{ident}",
+                    "duration": duration,
+                    "genre": "Archive",
+                    "source": "archive",
+                    "file_path": None
+                })
+            return songs
+    except Exception as e:
+        print(f"Archive search failed: {e}")
+    return []
+
+def search_songs_itunes(q_clean: str):
+    try:
+        response = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": q_clean, "media": "music", "limit": 25, "country": "IN"},
+            timeout=10,
+        )
+        data = response.json()
+        return [_itunes_to_song(item) for item in data.get("results", []) if item.get("trackName")]
+    except Exception:
+        return []
+
 def search_songs(query, user_id: str = "anonymous"):
     if not query:
         return []
     import re
-    # Clean query: strip redundant words "song", "songs", "music" if not the only words
     q_clean = query.strip()
     if q_clean:
         if not re.match(r'^(songs?|music)$', q_clean, re.IGNORECASE):
@@ -176,18 +305,31 @@ def search_songs(query, user_id: str = "anonymous"):
     if not q_clean:
         q_clean = query.strip()
 
-    try:
-        response = requests.get(
-            "https://itunes.apple.com/search",
-            params={"term": q_clean, "media": "music", "limit": 25, "country": "IN"},
-            timeout=10,
-        )
-        data = response.json()
-        songs = [_itunes_to_song(item) for item in data.get("results", []) if item.get("trackName")]
-        upsert_song_records(songs)
-        return inject_cache_status(songs, user_id=user_id)
-    except Exception:
-        return []
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        future_local = pool.submit(search_local_db, q_clean)
+        future_jamendo = pool.submit(search_jamendo, q_clean)
+        future_archive = pool.submit(search_archive, q_clean)
+        future_itunes = pool.submit(search_songs_itunes, q_clean)
+        
+        local_res = future_local.result() or []
+        jamendo_res = future_jamendo.result() or []
+        archive_res = future_archive.result() or []
+        itunes_res = future_itunes.result() or []
+
+    all_external = jamendo_res + archive_res + itunes_res
+    if all_external:
+        upsert_song_records(all_external)
+
+    combined = local_res + jamendo_res + archive_res + itunes_res
+    seen = set()
+    deduped = []
+    for s in combined:
+        if s["id"] not in seen:
+            seen.add(s["id"])
+            deduped.append(s)
+            
+    return inject_cache_status(deduped, user_id=user_id)
 
 
 def get_chart(user_id: str = "anonymous"):
@@ -619,7 +761,45 @@ def get_audio_from_piped(query: str):
     return None
 
 
+def get_audio_from_jamendo(query: str):
+    client_id = os.getenv("JAMENDO_CLIENT_ID", "2f01fa9c")
+    if not client_id:
+        return None
+    try:
+        url = "https://api.jamendo.com/v3.0/tracks/"
+        print(f"[FALLBACK] Querying Jamendo API for '{query}'...")
+        r = requests.get(url, params={
+            "client_id": client_id,
+            "format": "json",
+            "search": query,
+            "limit": 1
+        }, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            results = data.get("results", [])
+            if results:
+                track = results[0]
+                stream_url = track.get("audio")
+                if stream_url:
+                    print(f"[FALLBACK] Jamendo success: found stream URL '{stream_url}'")
+                    return {
+                        "source": "jamendo",
+                        "url": stream_url,
+                        "title": track.get("name", "Audio Stream"),
+                        "videoId": str(track.get("id", "jamendo_track")),
+                        "instance": "jamendo.com"
+                    }
+            print("[FALLBACK] Jamendo returned no matching tracks.")
+    except Exception as e:
+        print(f"[FALLBACK] Jamendo query failed: {e}")
+    return None
+
+
 def get_audio_fallback(query: str):
+    # Try Jamendo Music API first
+    res = get_audio_from_jamendo(query)
+    if res:
+        return res
     res = get_audio_from_invidious(query)
     if res:
         return res
@@ -695,6 +875,63 @@ def download_task(song_id, artist, title):
     clear_cache_if_needed()
     if is_song_cached(song_id):
         return
+
+    # Direct download for Jamendo and Archive
+    stream_url = None
+    if song_id.startswith("jamendo_") or song_id.startswith("archive_"):
+        if song_id.startswith("jamendo_"):
+            song = get_song_by_id(song_id)
+            if song and song.get("file_path") and song.get("file_path").startswith("http"):
+                stream_url = song.get("file_path")
+            else:
+                track_id = song_id.replace("jamendo_", "")
+                client_id = os.getenv("JAMENDO_CLIENT_ID", "2f01fa9c")
+                try:
+                    r = requests.get("https://api.jamendo.com/v3.0/tracks/", params={
+                        "client_id": client_id,
+                        "format": "json",
+                        "id": track_id
+                    }, timeout=5)
+                    if r.status_code == 200:
+                        res = r.json().get("results", [])
+                        if res:
+                            stream_url = res[0].get("audio")
+                except Exception:
+                    pass
+        elif song_id.startswith("archive_"):
+            ident = song_id.replace("archive_", "")
+            try:
+                r_meta = requests.get(f"https://archive.org/metadata/{ident}", timeout=5)
+                if r_meta.status_code == 200:
+                    files = r_meta.json().get("files", [])
+                    mp3_files = [f.get("name") for f in files if f.get("name", "").endswith(".mp3")]
+                    if mp3_files:
+                        stream_url = f"https://archive.org/download/{ident}/{mp3_files[0]}"
+            except Exception:
+                pass
+
+        if stream_url:
+            try:
+                ext = "mp3"
+                r = requests.get(stream_url, stream=True, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+                if r.status_code == 200:
+                    content_type = r.headers.get("Content-Type", "")
+                    if "webm" in content_type:
+                        ext = "webm"
+                    elif "ogg" in content_type or "opus" in content_type:
+                        ext = "opus"
+                    
+                    filepath = CACHE_DIR / f"{song_id}.{ext}"
+                    with open(filepath, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 16):
+                            f.write(chunk)
+                    print(f"[DOWNLOAD] Successfully cached external song via stream to {filepath}")
+                    clear_cache_if_needed()
+                    return
+            except Exception as e:
+                print(f"[DOWNLOAD] Caching Jamendo/Archive stream failed: {e}")
+
+    # Fallback to standard flow for YouTube
     query = f"{artist} - {title} audio"
     try:
         extract_video_info(f"ytsearch1:{query}", is_download=True, song_id=song_id)
@@ -765,12 +1002,62 @@ def render_play_response(request: Request, song_id: str, artist: str, title: str
         base_url = str(request.base_url).rstrip("/")
         return JSONResponse({"source": "local", "url": f"{base_url}/api/mobile/stream_cache/{filename}"})
 
+    base_url = str(request.base_url).rstrip("/")
+
+    # Uploaded playback
+    if song_id.startswith("uploaded_"):
+        song = get_song_by_id(song_id)
+        if song and song.get("file_path"):
+            fp = song.get("file_path")
+            if fp.startswith("uploads/"):
+                fp = fp[len("uploads/"):]
+            return JSONResponse({"source": "uploaded", "url": f"{base_url}/api/mobile/uploads/{fp}"})
+
+    # Jamendo playback
+    if song_id.startswith("jamendo_"):
+        song = get_song_by_id(song_id)
+        stream_url = ""
+        if song and song.get("file_path"):
+            stream_url = song.get("file_path")
+        else:
+            track_id = song_id.replace("jamendo_", "")
+            client_id = os.getenv("JAMENDO_CLIENT_ID", "2f01fa9c")
+            try:
+                r = requests.get("https://api.jamendo.com/v3.0/tracks/", params={
+                    "client_id": client_id,
+                    "format": "json",
+                    "id": track_id
+                }, timeout=5)
+                if r.status_code == 200:
+                    res = r.json().get("results", [])
+                    if res:
+                        stream_url = res[0].get("audio")
+            except Exception:
+                pass
+        if stream_url:
+            return JSONResponse({"source": "jamendo", "url": stream_url})
+
+    # Internet Archive playback
+    if song_id.startswith("archive_"):
+        ident = song_id.replace("archive_", "")
+        try:
+            r_meta = requests.get(f"https://archive.org/metadata/{ident}", timeout=5)
+            if r_meta.status_code == 200:
+                files = r_meta.json().get("files", [])
+                mp3_files = [f.get("name") for f in files if f.get("name", "").endswith(".mp3")]
+                if mp3_files:
+                    filename = mp3_files[0]
+                    stream_url = f"https://archive.org/download/{ident}/{filename}"
+                    return JSONResponse({"source": "archive", "url": stream_url})
+        except Exception as e:
+            print(f"Archive stream resolution failed: {e}")
+
+    # Standard YouTube Playback Flow
     query = f"{artist} - {title} audio"
     try:
         info = extract_video_info(f"ytsearch1:{query}", is_download=False)
         video = info["entries"][0] if "entries" in info else info
         http_headers = video.get("http_headers", {})
-        base_url = str(request.base_url).rstrip("/")
         proxy_url = f"{base_url}/api/mobile/stream_proxy?url={quote(video['url'])}&headers={quote(json.dumps(http_headers))}"
         return JSONResponse({"source": "youtube", "url": proxy_url, "direct_url": video["url"], "headers": http_headers})
     except Exception as exc:
@@ -1612,6 +1899,120 @@ def generate_fallback_playlist_local(prompt, user_id):
                 cursor.execute("INSERT INTO playlist_songs (playlist_id, song_id) VALUES (%s, %s) ON CONFLICT DO NOTHING;", (playlist_id, sid))
         return JSONResponse({"status": "success", "playlist": {"id": playlist_id, "name": playlist_name}})
     except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mobile/upload")
+async def mobile_upload(
+    audio: UploadFile = File(...),
+    cover: Optional[UploadFile] = File(None),
+    title: str = Form(...),
+    artist: str = Form("Unknown"),
+    album: str = Form("Single"),
+    genre: str = Form("Music")
+):
+    try:
+        song_id = f"uploaded_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        audio_ext = audio.filename.split(".")[-1] if "." in audio.filename else "mp3"
+        audio_filename = f"{song_id}.{audio_ext}"
+        audio_path = UPLOADS_DIR / audio_filename
+        
+        with open(audio_path, "wb") as f:
+            f.write(await audio.read())
+            
+        cover_url = ""
+        if cover:
+            cover_ext = cover.filename.split(".")[-1] if "." in cover.filename else "jpg"
+            cover_filename = f"{song_id}_cover.{cover_ext}"
+            cover_path = UPLOADS_DIR / cover_filename
+            with open(cover_path, "wb") as f:
+                f.write(await cover.read())
+            cover_url = f"/api/mobile/uploads/{cover_filename}"
+            
+        song_data = {
+            "id": song_id,
+            "title": title or "Unknown",
+            "artist": artist or "Unknown",
+            "artist_id": 0,
+            "album": album or "Single",
+            "cover": cover_url,
+            "cover_xl": cover_url,
+            "duration": 0,
+            "genre": genre or "Music",
+            "source": "uploaded",
+            "file_path": f"uploads/{audio_filename}"
+        }
+        
+        upsert_song_records([song_data])
+        return JSONResponse({"status": "success", "song": song_data})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/mobile/uploaded")
+def mobile_uploaded(user_id: str = "anonymous"):
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy, source, file_path 
+                FROM songs 
+                WHERE source = 'uploaded'
+                ORDER BY created_at DESC;
+            """)
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            songs = [dict(zip(columns, row)) for row in rows]
+            return JSONResponse(inject_cache_status(songs, user_id=user_id))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+class AIChatRequest(BaseModel):
+    message: str
+    history: List[dict] = []
+    user_id: str = "anonymous"
+
+
+@app.post("/api/mobile/ai_chat")
+def mobile_ai_chat(req: AIChatRequest):
+    message = req.message.strip()
+    if not message:
+        return JSONResponse({"error": "Message cannot be empty"}, status_code=400)
+        
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        return JSONResponse({"reply": "I'm sorry, the AI Assistant is currently disabled because GROQ_API_KEY is not configured.", "recommendations": []})
+        
+    try:
+        system_prompt = (
+            "You are AudioDrip's AI Assistant. The user wants to discuss music, get recommendations, "
+            "or generate playlists. Be helpful, concise, friendly, and cool. "
+            "If the user asks for music recommendations or to play something, suggest some artists/songs. "
+            "Always respond in clean markdown format."
+        )
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        for msg in req.history[-10:]:
+            messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
+        messages.append({"role": "user", "content": message})
+        
+        headers = {
+            "Authorization": f"Bearer {groq_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.1-8b-instant",
+            "messages": messages,
+            "temperature": 0.7,
+        }
+        
+        resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=10)
+        resp.raise_for_status()
+        reply_text = resp.json()["choices"][0]["message"]["content"]
+        
+        return JSONResponse({"reply": reply_text})
+    except Exception as e:
+        print(f"Error calling Groq chat: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 

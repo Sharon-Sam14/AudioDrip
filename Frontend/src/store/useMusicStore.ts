@@ -21,6 +21,8 @@ export interface Track {
   isLiked: boolean;
   badge?: "Hot" | "New" | "Classic";
   cached?: boolean;
+  source?: string;
+  file_path?: string;
 }
 
 export interface Song {
@@ -35,6 +37,8 @@ export interface Song {
   genre: string;
   cached?: boolean;
   liked?: boolean;
+  source?: string;
+  file_path?: string;
 }
 
 export const trackToSong = (t: Track): Song => ({
@@ -48,7 +52,9 @@ export const trackToSong = (t: Track): Song => ({
   duration: t.duration,
   genre: t.genre,
   cached: t.cached,
-  liked: t.isLiked
+  liked: t.isLiked,
+  source: t.source,
+  file_path: t.file_path
 });
 
 export const songToTrack = (s: Song): Track => ({
@@ -63,7 +69,9 @@ export const songToTrack = (s: Song): Track => ({
   genre: s.genre || "Music",
   playCount: 1000,
   isLiked: !!s.liked,
-  cached: s.cached
+  cached: s.cached,
+  source: s.source,
+  file_path: s.file_path
 });
 
 export const seedTracks: Track[] = [
@@ -143,13 +151,14 @@ interface MusicState {
 
   // Navigation / Tabs
   activeTab: 'discover' | 'search' | 'library' | 'playing';
-  librarySubTab: 'liked' | 'playlists' | 'cached';
+  librarySubTab: 'liked' | 'playlists' | 'cached' | 'uploaded';
 
   // Data collections
   chartSongs: Song[];
   searchResults: Song[];
   librarySongs: Song[];
   likedSongs: Song[];
+  uploadedSongs: Song[];
   playlists: Playlist[];
   selectedPlaylist: Playlist | null;
   playlistSongs: Song[];
@@ -181,10 +190,12 @@ interface MusicState {
   isSidebarExpanded: boolean;
   isBoothOpen: boolean;
   isQueueOpen: boolean;
+  isAIPanelOpen: boolean;
   viewMode: "grid" | "list";
   showCreateModal: boolean;
   newPlaylistName: string;
   showAddModal: boolean;
+  showUploadModal: boolean;
   songToAddToPlaylist: Song | null;
 
   // User Preferences
@@ -193,6 +204,10 @@ interface MusicState {
 
   // AI Playlist Generator
   isGeneratingAIPlaylist: boolean;
+
+  // AI Chat Panel
+  aiMessages: { role: 'user' | 'assistant'; content: string }[];
+  isSendingAIMessage: boolean;
 
   // Actions
   play: (track: Track) => void;
@@ -209,17 +224,19 @@ interface MusicState {
   setSkinColors: (colors: { primary: string; secondary: string }) => void;
   toggleBooth: () => void;
   toggleQueue: () => void;
+  setIsAIPanelOpen: (open: boolean) => void;
   toggleRepeat: () => void;
   toggleSidebar: () => void;
   setViewMode: (mode: "grid" | "list") => void;
 
   // Tab Setters
   setActiveTab: (tab: 'discover' | 'search' | 'library' | 'playing') => void;
-  setLibrarySubTab: (subTab: 'liked' | 'playlists' | 'cached') => void;
+  setLibrarySubTab: (subTab: 'liked' | 'playlists' | 'cached' | 'uploaded') => void;
   setSelectedPlaylist: (playlist: Playlist | null) => void;
   setNewPlaylistName: (name: string) => void;
   setShowCreateModal: (show: boolean) => void;
   setShowAddModal: (show: boolean) => void;
+  setShowUploadModal: (show: boolean) => void;
   setSongToAddToPlaylist: (song: Song | null) => void;
   setSearchQuery: (query: string) => void;
   setSelectedVibe: (vibe: string | null) => void;
@@ -230,6 +247,7 @@ interface MusicState {
   fetchChart: () => Promise<void>;
   fetchLibrary: () => Promise<void>;
   fetchLikedSongs: () => Promise<void>;
+  fetchUploadedSongs: () => Promise<void>;
   fetchPlaylists: () => Promise<void>;
   fetchPlaylistSongs: (playlistId: number) => Promise<void>;
   fetchLyrics: (track: Track) => Promise<void>;
@@ -244,6 +262,9 @@ interface MusicState {
   handleToggleLike: (song: Song, e?: React.MouseEvent) => Promise<void>;
   handleGenerateAIPlaylist: (prompt: string) => Promise<void>;
   cacheSong: (track: Track) => Promise<void>;
+  uploadSong: (formData: FormData) => Promise<boolean>;
+  sendAIMessage: (text: string) => Promise<void>;
+  clearAIChat: () => void;
   fetchPreferences: () => Promise<void>;
   savePreferences: (prefs: UserPreferences) => Promise<void>;
   setShowPrefsModal: (show: boolean) => void;
@@ -320,6 +341,7 @@ export const useMusicStore = create<MusicState>((set, get) => {
     searchResults: [],
     librarySongs: [],
     likedSongs: [],
+    uploadedSongs: [],
     playlists: [],
     selectedPlaylist: null,
     playlistSongs: [],
@@ -355,14 +377,18 @@ export const useMusicStore = create<MusicState>((set, get) => {
     isSidebarExpanded: false,
     isBoothOpen: false,
     isQueueOpen: false,
+    isAIPanelOpen: false,
     viewMode: 'grid',
     showCreateModal: false,
     newPlaylistName: '',
     showAddModal: false,
+    showUploadModal: false,
     songToAddToPlaylist: null,
 
     // AI
     isGeneratingAIPlaylist: false,
+    aiMessages: [],
+    isSendingAIMessage: false,
     theme: (typeof window !== 'undefined' ? (localStorage.getItem('audiodrip_theme') as 'light' | 'dark' | null) : 'dark') || 'dark',
 
     // Actions
@@ -523,6 +549,7 @@ export const useMusicStore = create<MusicState>((set, get) => {
     },
     toggleBooth: () => set((state) => ({ isBoothOpen: !state.isBoothOpen })),
     toggleQueue: () => set((state) => ({ isQueueOpen: !state.isQueueOpen })),
+    setIsAIPanelOpen: (open) => set({ isAIPanelOpen: open }),
     toggleSidebar: () => set((state) => ({ isSidebarExpanded: !state.isSidebarExpanded })),
     toggleRepeat: () => {
       const current = get().repeatMode;
@@ -540,6 +567,7 @@ export const useMusicStore = create<MusicState>((set, get) => {
     setNewPlaylistName: (name) => set({ newPlaylistName: name }),
     setShowCreateModal: (show) => set({ showCreateModal: show }),
     setShowAddModal: (show) => set({ showAddModal: show }),
+    setShowUploadModal: (show) => set({ showUploadModal: show }),
     setSongToAddToPlaylist: (song) => set({ songToAddToPlaylist: song }),
     setSearchQuery: (query) => set({ searchQuery: query }),
     setSelectedVibe: (vibe) => set({ selectedVibe: vibe }),
@@ -622,6 +650,20 @@ export const useMusicStore = create<MusicState>((set, get) => {
         }
       } catch (err) {
         console.error("Error fetching offline cache:", err);
+      }
+    },
+
+    fetchUploadedSongs: async () => {
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
+      try {
+        const response = await fetch(`/api/mobile/uploaded?user_id=${encodeURIComponent(userId)}`);
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          set({ uploadedSongs: data });
+        }
+      } catch (err) {
+        console.error("Error fetching uploaded songs:", err);
       }
     },
 
@@ -877,6 +919,59 @@ export const useMusicStore = create<MusicState>((set, get) => {
         console.error("Error requesting song download/cache:", err);
       }
     },
+
+    uploadSong: async (formData: FormData) => {
+      try {
+        const response = await fetch('/api/mobile/upload', {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+          await get().fetchUploadedSongs();
+          return true;
+        }
+        return false;
+      } catch (err) {
+        console.error("Error uploading track:", err);
+        return false;
+      }
+    },
+
+    sendAIMessage: async (text: string) => {
+      const { aiMessages } = get();
+      const updatedMessages = [...aiMessages, { role: 'user' as const, content: text }];
+      set({ aiMessages: updatedMessages, isSendingAIMessage: true });
+      
+      const currentUser = get().user;
+      const userId = currentUser?.email || "anonymous";
+      try {
+        const response = await fetch('/api/mobile/ai_chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text, history: aiMessages, user_id: userId }),
+        });
+        const data = await response.json();
+        if (data.reply) {
+          set({
+            aiMessages: [...updatedMessages, { role: 'assistant' as const, content: data.reply }],
+          });
+        } else if (data.error) {
+          set({
+            aiMessages: [...updatedMessages, { role: 'assistant' as const, content: `Error: ${data.error}` }],
+          });
+        }
+      } catch (err) {
+        console.error("AI Chat error:", err);
+        set({
+          aiMessages: [...updatedMessages, { role: 'assistant' as const, content: "Sorry, I encountered an issue connecting to the AI helper." }],
+        });
+      } finally {
+        set({ isSendingAIMessage: false });
+      }
+    },
+
+    clearAIChat: () => set({ aiMessages: [] }),
 
     // Auth actions implementation
     signUp: async (email, password) => {

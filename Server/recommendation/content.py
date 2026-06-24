@@ -21,6 +21,8 @@ def _normalize_song(song):
         "cover_xl": song.get("cover_xl", "") or "",
         "duration": int(song.get("duration", 0) or 0),
         "genre": song.get("genre", "") or "",
+        "source": song.get("source", "youtube") or "youtube",
+        "file_path": song.get("file_path"),
     }
 
     tempo = song.get("tempo")
@@ -40,7 +42,7 @@ def _normalize_song(song):
 def _read_catalog():
     with get_db_cursor() as cursor:
         cursor.execute("""
-            SELECT id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy 
+            SELECT id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy, source, file_path 
             FROM songs;
         """)
         rows = cursor.fetchall()
@@ -60,8 +62,8 @@ def upsert_song_records(songs):
                 continue
 
             cursor.execute("""
-                INSERT INTO songs (id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy)
-                VALUES (%(id)s, %(title)s, %(artist)s, %(artist_id)s, %(album)s, %(cover)s, %(cover_xl)s, %(duration)s, %(genre)s, %(tempo)s, %(energy)s)
+                INSERT INTO songs (id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy, source, file_path)
+                VALUES (%(id)s, %(title)s, %(artist)s, %(artist_id)s, %(album)s, %(cover)s, %(cover_xl)s, %(duration)s, %(genre)s, %(tempo)s, %(energy)s, %(source)s, %(file_path)s)
                 ON CONFLICT (id) DO UPDATE SET
                     title = COALESCE(NULLIF(EXCLUDED.title, 'Unknown'), songs.title),
                     artist = COALESCE(NULLIF(EXCLUDED.artist, ''), songs.artist),
@@ -72,7 +74,9 @@ def upsert_song_records(songs):
                     duration = CASE WHEN EXCLUDED.duration > 0 THEN EXCLUDED.duration ELSE songs.duration END,
                     genre = COALESCE(NULLIF(EXCLUDED.genre, ''), songs.genre),
                     tempo = COALESCE(EXCLUDED.tempo, songs.tempo),
-                    energy = COALESCE(EXCLUDED.energy, songs.energy);
+                    energy = COALESCE(EXCLUDED.energy, songs.energy),
+                    source = COALESCE(NULLIF(EXCLUDED.source, ''), songs.source),
+                    file_path = COALESCE(NULLIF(EXCLUDED.file_path, ''), songs.file_path);
             """, normalized)
 
 def get_song_by_id(song_id):
@@ -82,7 +86,7 @@ def get_song_by_id(song_id):
         
     with get_db_cursor() as cursor:
         cursor.execute("""
-            SELECT id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy 
+            SELECT id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy, source, file_path 
             FROM songs 
             WHERE id = %s;
         """, (song_id,))
@@ -102,7 +106,7 @@ def get_songs_by_ids(song_ids):
         
     with get_db_cursor() as cursor:
         cursor.execute("""
-            SELECT id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy 
+            SELECT id, title, artist, artist_id, album, cover, cover_xl, duration, genre, tempo, energy, source, file_path 
             FROM songs 
             WHERE id = ANY(%s);
         """, (ids,))
