@@ -104,7 +104,7 @@ http://[YOUR_COMPUTER_IP]:8000
 | 🏷️ **Filter Chips & Badges** | Filter browse grids dynamically by source/vibe; distinct source badges rendered throughout |
 | ❤️ **Library & Playlists** | Personal track collections, custom playlists, and profile analytics |
 | 🌙 **Themes** | Modern premium HSL styling: Obsidian Studio (dark) and Daylight Session (light) |
-| 🔐 **Auth** | User account registrations, credentials validation, and custom email codes |
+| 🔒 **Guest Sessions** | Frictionless local device sessions (no account registration or login required) |
 
 ---
 
@@ -159,7 +159,7 @@ npm run build
 | `playback_transitions` | Behavior-based skip pattern tracking |
 | `liked_songs` | Per-user liked songs |
 | `playlists` + `playlist_songs` | User playlists |
-| `users` | Email/password user accounts |
+| `users` | Legacy table (retained for database key integrity) |
 | `user_interactions` | Interaction scoring for recommendations |
 | `system_settings` | Server state (e.g. last decay timestamp) |
 

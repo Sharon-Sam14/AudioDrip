@@ -1,12 +1,6 @@
 import { create } from 'zustand';
 import { extractDominantColors, updateSkinCSSVariables } from '../utils/ColorExtractor';
 
-// Local user type matching backend auth response shape
-export interface AudioDripUser {
-  id: string;
-  email: string;
-}
-
 export interface Track {
   id: string;
   title: string;
@@ -140,14 +134,22 @@ export interface UserPreferences {
   genres: string[];
 }
 
+// Generate or retrieve a stable per-device ID (replaces auth user_id)
+function getOrCreateDeviceId(): string {
+  if (typeof window === 'undefined') return 'anonymous';
+  let id = localStorage.getItem('audiodrip_device_id');
+  if (!id) {
+    id = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `device_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem('audiodrip_device_id', id);
+  }
+  return id;
+}
+
 interface MusicState {
-  // Auth
-  user: AudioDripUser | null;
-  authLoading: boolean;
-  authError: string | null;
-  showAuthModal: boolean;
-  authView: 'signin' | 'signup' | 'forgot' | 'reset' | 'verify';
-  authMessage: string | null;
+  // Device identity (replaces auth user)
+  deviceId: string;
 
   // Navigation / Tabs
   activeTab: 'discover' | 'search' | 'library' | 'playing';
@@ -209,6 +211,9 @@ interface MusicState {
   aiMessages: { role: 'user' | 'assistant'; content: string }[];
   isSendingAIMessage: boolean;
 
+  // Theme
+  theme: 'dark' | 'light';
+
   // Actions
   play: (track: Track) => void;
   pause: () => void;
@@ -240,10 +245,8 @@ interface MusicState {
   setSongToAddToPlaylist: (song: Song | null) => void;
   setSearchQuery: (query: string) => void;
   setSelectedVibe: (vibe: string | null) => void;
-  setShowAuthModal: (show: boolean) => void;
-  setAuthView: (view: 'signin' | 'signup' | 'forgot' | 'reset' | 'verify') => void;
 
-  // ITunes/Deezer data triggers
+  // Data fetchers
   fetchChart: () => Promise<void>;
   fetchLibrary: () => Promise<void>;
   fetchLikedSongs: () => Promise<void>;
@@ -268,18 +271,10 @@ interface MusicState {
   fetchPreferences: () => Promise<void>;
   savePreferences: (prefs: UserPreferences) => Promise<void>;
   setShowPrefsModal: (show: boolean) => void;
-
-  // Auth Operations
-  signUp: (email: string, password: string) => Promise<void>;
-  signIn: (email: string, password: string) => Promise<void>;
-  verifyEmail: (email: string, code: string) => Promise<void>;
-  resendVerification: (email: string) => Promise<void>;
-  signOut: () => Promise<void>;
-  initAuth: () => void;
-  sendPasswordResetEmail: (email: string) => Promise<void>;
-  updatePassword: (password: string) => Promise<void>;
   toggleTheme: () => void;
-  theme: 'dark' | 'light';
+
+  // App initialization (replaces initAuth)
+  initApp: () => void;
 }
 
 // Global Audio Binding
@@ -324,13 +319,8 @@ export const useMusicStore = create<MusicState>((set, get) => {
   }
 
   return {
-    // Auth
-    user: null,
-    authLoading: false,
-    authError: null,
-    showAuthModal: false,
-    authView: 'signin',
-    authMessage: null,
+    // Device ID (replaces auth user — initialized lazily in initApp)
+    deviceId: 'anonymous',
 
     // Navigation Tabs
     activeTab: 'discover',
@@ -409,12 +399,11 @@ export const useMusicStore = create<MusicState>((set, get) => {
         console.error("Failed to extract color skins:", e);
       }
 
-      // Fetch real playable stream URL from backend (proxying / caching via yt-dlp)
+      // Fetch real playable stream URL from backend
       let streamUrl = track.audioUrl;
       try {
-        const currentUser = get().user;
-        const userId = currentUser?.email || "anonymous";
-        const response = await fetch(`/api/mobile/play?id=${track.id}&artist=${encodeURIComponent(track.artist)}&title=${encodeURIComponent(track.title)}&user_id=${encodeURIComponent(userId)}`);
+        const deviceId = get().deviceId;
+        const response = await fetch(`/api/mobile/play?id=${track.id}&artist=${encodeURIComponent(track.artist)}&title=${encodeURIComponent(track.title)}&user_id=${encodeURIComponent(deviceId)}`);
         const data = await response.json();
         if (data.url) {
           streamUrl = data.url;
@@ -444,7 +433,7 @@ export const useMusicStore = create<MusicState>((set, get) => {
       // Fetch lyrics
       get().fetchLyrics(track);
       
-      // Fetch up next suggestions (based on artist/genre/embedding)
+      // Fetch up next suggestions
       get().fetchUpNextSuggestions(track.id);
     },
 
@@ -571,16 +560,14 @@ export const useMusicStore = create<MusicState>((set, get) => {
     setSongToAddToPlaylist: (song) => set({ songToAddToPlaylist: song }),
     setSearchQuery: (query) => set({ searchQuery: query }),
     setSelectedVibe: (vibe) => set({ selectedVibe: vibe }),
-    setShowAuthModal: (show) => set({ showAuthModal: show, authError: null, authMessage: null }),
-    setAuthView: (view) => set({ authView: view, authError: null, authMessage: null }),
     setShowPrefsModal: (show) => set({ showPrefsModal: show }),
 
     fetchPreferences: async () => {
-      const currentUser = get().user;
-      if (currentUser) {
-        // Logged-in: fetch from backend
+      const { deviceId } = get();
+      if (deviceId && deviceId !== 'anonymous') {
+        // Try fetching from backend (saves cross-device if user reuses same device_id)
         try {
-          const res = await fetch(`/api/mobile/preferences?user_id=${encodeURIComponent(currentUser.email)}`);
+          const res = await fetch(`/api/mobile/preferences?user_id=${encodeURIComponent(deviceId)}`);
           const data = await res.json();
           const prefs: UserPreferences = {
             languages: data.languages || [],
@@ -588,46 +575,42 @@ export const useMusicStore = create<MusicState>((set, get) => {
           };
           set({ userPreferences: prefs });
           localStorage.setItem('audiodrip_prefs', JSON.stringify(prefs));
+          return;
         } catch (err) {
-          console.error('Error fetching preferences:', err);
+          console.error('Error fetching preferences from backend:', err);
         }
-      } else {
-        // Guest: load from localStorage
-        const stored = localStorage.getItem('audiodrip_prefs');
-        if (stored) {
-          try {
-            const prefs = JSON.parse(stored) as UserPreferences;
-            set({ userPreferences: prefs });
-          } catch { /* ignore */ }
-        }
+      }
+      // Fallback: load from localStorage
+      const stored = localStorage.getItem('audiodrip_prefs');
+      if (stored) {
+        try {
+          const prefs = JSON.parse(stored) as UserPreferences;
+          set({ userPreferences: prefs });
+        } catch { /* ignore */ }
       }
     },
 
     savePreferences: async (prefs: UserPreferences) => {
       set({ userPreferences: prefs });
       localStorage.setItem('audiodrip_prefs', JSON.stringify(prefs));
-      const currentUser = get().user;
-      if (currentUser) {
-        try {
-          await fetch('/api/mobile/preferences', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_id: currentUser.email, ...prefs }),
-          });
-        } catch (err) {
-          console.error('Error saving preferences to backend:', err);
-        }
+      const { deviceId } = get();
+      try {
+        await fetch('/api/mobile/preferences', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: deviceId, ...prefs }),
+        });
+      } catch (err) {
+        console.error('Error saving preferences to backend:', err);
       }
       // Refresh chart with new preferences applied
       await get().fetchChart();
     },
 
-    // DEEZER CHART LOADER
     fetchChart: async () => {
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
+      const { deviceId } = get();
       try {
-        const response = await fetch(`/api/mobile/chart?user_id=${encodeURIComponent(userId)}`);
+        const response = await fetch(`/api/mobile/chart?user_id=${encodeURIComponent(deviceId)}`);
         const data = await response.json();
         
         if (Array.isArray(data)) {
@@ -640,10 +623,9 @@ export const useMusicStore = create<MusicState>((set, get) => {
     },
 
     fetchLibrary: async () => {
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
+      const { deviceId } = get();
       try {
-        const response = await fetch(`/api/mobile/cached?user_id=${encodeURIComponent(userId)}`);
+        const response = await fetch(`/api/mobile/cached?user_id=${encodeURIComponent(deviceId)}`);
         const data = await response.json();
         if (Array.isArray(data)) {
           set({ librarySongs: data });
@@ -654,10 +636,9 @@ export const useMusicStore = create<MusicState>((set, get) => {
     },
 
     fetchUploadedSongs: async () => {
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
+      const { deviceId } = get();
       try {
-        const response = await fetch(`/api/mobile/uploaded?user_id=${encodeURIComponent(userId)}`);
+        const response = await fetch(`/api/mobile/uploaded?user_id=${encodeURIComponent(deviceId)}`);
         const data = await response.json();
         if (Array.isArray(data)) {
           set({ uploadedSongs: data });
@@ -668,10 +649,9 @@ export const useMusicStore = create<MusicState>((set, get) => {
     },
 
     fetchLikedSongs: async () => {
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
+      const { deviceId } = get();
       try {
-        const response = await fetch(`/api/mobile/liked?user_id=${encodeURIComponent(userId)}`);
+        const response = await fetch(`/api/mobile/liked?user_id=${encodeURIComponent(deviceId)}`);
         const data = await response.json();
         if (Array.isArray(data)) {
           set({ likedSongs: data });
@@ -682,10 +662,9 @@ export const useMusicStore = create<MusicState>((set, get) => {
     },
 
     fetchPlaylists: async () => {
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
+      const { deviceId } = get();
       try {
-        const response = await fetch(`/api/mobile/playlists?user_id=${encodeURIComponent(userId)}`);
+        const response = await fetch(`/api/mobile/playlists?user_id=${encodeURIComponent(deviceId)}`);
         const data = await response.json();
         if (Array.isArray(data)) {
           set({ playlists: data });
@@ -696,10 +675,9 @@ export const useMusicStore = create<MusicState>((set, get) => {
     },
 
     fetchPlaylistSongs: async (playlistId: number) => {
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
+      const { deviceId } = get();
       try {
-        const response = await fetch(`/api/mobile/playlists/${playlistId}/songs?user_id=${encodeURIComponent(userId)}`);
+        const response = await fetch(`/api/mobile/playlists/${playlistId}/songs?user_id=${encodeURIComponent(deviceId)}`);
         const data = await response.json();
         if (Array.isArray(data)) {
           set({ playlistSongs: data });
@@ -732,15 +710,12 @@ export const useMusicStore = create<MusicState>((set, get) => {
       }
     },
 
-    // Operations
     handleCreatePlaylist: async (e) => {
       if (e) e.preventDefault();
-      const { newPlaylistName } = get();
+      const { newPlaylistName, deviceId } = get();
       if (!newPlaylistName.trim()) return;
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
       try {
-        const response = await fetch(`/api/mobile/playlists?name=${encodeURIComponent(newPlaylistName)}&user_id=${encodeURIComponent(userId)}`, {
+        const response = await fetch(`/api/mobile/playlists?name=${encodeURIComponent(newPlaylistName)}&user_id=${encodeURIComponent(deviceId)}`, {
           method: 'POST'
         });
         const data = await response.json();
@@ -805,14 +780,12 @@ export const useMusicStore = create<MusicState>((set, get) => {
 
     handleSearch: async (e) => {
       if (e) e.preventDefault();
-      const { searchQuery } = get();
+      const { searchQuery, deviceId } = get();
       if (!searchQuery.trim()) return;
 
       set({ isSearching: true });
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
       try {
-        const response = await fetch(`/api/mobile/search?q=${encodeURIComponent(searchQuery)}&user_id=${encodeURIComponent(userId)}`);
+        const response = await fetch(`/api/mobile/search?q=${encodeURIComponent(searchQuery)}&user_id=${encodeURIComponent(deviceId)}`);
         const data = await response.json();
         
         if (Array.isArray(data)) {
@@ -828,18 +801,15 @@ export const useMusicStore = create<MusicState>((set, get) => {
 
     handleToggleLike: async (song, e) => {
       if (e) e.stopPropagation();
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
+      const { deviceId } = get();
       try {
-        const response = await fetch(`/api/mobile/like?song_id=${encodeURIComponent(song.id)}&user_id=${encodeURIComponent(userId)}`, {
+        const response = await fetch(`/api/mobile/like?song_id=${encodeURIComponent(song.id)}&user_id=${encodeURIComponent(deviceId)}`, {
           method: 'POST'
         });
         const data = await response.json();
         if (data.status === 'success') {
           get().toggleLike(song.id);
-          // Sync likedSongs locally by refreshing from backend
           await get().fetchLikedSongs();
-          // Update cached tracks in discover
           await get().fetchChart();
         }
       } catch (err) {
@@ -850,13 +820,12 @@ export const useMusicStore = create<MusicState>((set, get) => {
     handleGenerateAIPlaylist: async (prompt) => {
       if (!prompt.trim()) return;
       set({ isGeneratingAIPlaylist: true });
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
+      const { deviceId } = get();
       try {
         const response = await fetch(`/api/mobile/ai_playlist`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, user_id: userId })
+          body: JSON.stringify({ prompt, user_id: deviceId })
         });
         const data = await response.json();
         if (data.status === 'success') {
@@ -890,7 +859,6 @@ export const useMusicStore = create<MusicState>((set, get) => {
         });
         const data = await response.json();
         if (data.status === 'queued') {
-          // Optimistically update cached state
           set((state) => {
             const updateCached = (list: Track[]) =>
               list.map(t => t.id === track.id ? { ...t, cached: true } : t);
@@ -909,7 +877,6 @@ export const useMusicStore = create<MusicState>((set, get) => {
             };
           });
 
-          // Refresh cache list after a short delay
           setTimeout(() => {
             get().fetchLibrary();
             get().fetchChart();
@@ -939,17 +906,15 @@ export const useMusicStore = create<MusicState>((set, get) => {
     },
 
     sendAIMessage: async (text: string) => {
-      const { aiMessages } = get();
+      const { aiMessages, deviceId } = get();
       const updatedMessages = [...aiMessages, { role: 'user' as const, content: text }];
       set({ aiMessages: updatedMessages, isSendingAIMessage: true });
       
-      const currentUser = get().user;
-      const userId = currentUser?.email || "anonymous";
       try {
         const response = await fetch('/api/mobile/ai_chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, history: aiMessages, user_id: userId }),
+          body: JSON.stringify({ message: text, history: aiMessages, user_id: deviceId }),
         });
         const data = await response.json();
         if (data.reply) {
@@ -973,242 +938,29 @@ export const useMusicStore = create<MusicState>((set, get) => {
 
     clearAIChat: () => set({ aiMessages: [] }),
 
-    // Auth actions implementation
-    signUp: async (email, password) => {
-      set({ authLoading: true, authError: null, authMessage: null });
-      try {
-        const response = await fetch('/api/mobile/signup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
-        });
-        const data = await response.json();
-        if (!response.ok || data.error) {
-          set({ authError: data.error || 'Sign up failed', authLoading: false });
-        } else if (data.needs_verification) {
-          set({ 
-            authView: 'verify', 
-            authLoading: false, 
-            authMessage: 'Verification code sent to your email! Please enter it below.'
-          });
-        } else {
-          const user: AudioDripUser = { id: data.user.id, email: data.user.email };
-          localStorage.setItem('audiodrip_user', JSON.stringify(user));
-          set({ user, authLoading: false, showAuthModal: false, authMessage: 'Account created successfully!' });
-          // Fetch authenticated user's content
-          await get().fetchLikedSongs();
-          await get().fetchPlaylists();
-          await get().fetchLibrary();
-          await get().fetchPreferences();
-          await get().fetchChart();
-          // New account: always show preferences modal
-          set({ showPrefsModal: true });
-        }
-      } catch (err) {
-        console.error("SignUp backend error:", err);
-        set({ authError: "Failed to connect to authentication server", authLoading: false });
-      }
-    },
+    // App initialization (replaces initAuth — no auth, just setup)
+    initApp: () => {
+      if (typeof window === 'undefined') return;
 
-    signIn: async (email, password) => {
-      set({ authLoading: true, authError: null, authMessage: null });
-      try {
-        const response = await fetch('/api/mobile/signin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
-        });
-        const data = await response.json();
-        if (!response.ok || data.error) {
-          if (data.code === 'EMAIL_NOT_VERIFIED') {
-            set({ 
-              authView: 'verify', 
-              authError: 'Please verify your email address to continue.', 
-              authLoading: false 
-            });
-          } else {
-            set({ authError: data.error || 'Invalid email or password', authLoading: false });
-          }
-        } else {
-          const user: AudioDripUser = { id: data.user.id, email: data.user.email };
-          localStorage.setItem('audiodrip_user', JSON.stringify(user));
-          set({ user, authLoading: false, showAuthModal: false });
-          // Fetch authenticated user's content
-          await get().fetchLikedSongs();
-          await get().fetchPlaylists();
-          await get().fetchLibrary();
-          await get().fetchPreferences();
-          await get().fetchChart();
-          // Show preferences modal if user has never set preferences
-          const prefs = get().userPreferences;
-          if (prefs.languages.length === 0 && prefs.genres.length === 0) {
-            set({ showPrefsModal: true });
-          }
-        }
-      } catch (err) {
-        console.error("SignIn backend error:", err);
-        set({ authError: "Failed to connect to authentication server", authLoading: false });
-      }
-    },
-
-    verifyEmail: async (email, code) => {
-      set({ authLoading: true, authError: null, authMessage: null });
-      try {
-        const response = await fetch('/api/mobile/verify_email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, code })
-        });
-        const data = await response.json();
-        if (!response.ok || data.error) {
-          set({ authError: data.error || 'Verification failed', authLoading: false });
-        } else {
-          const user: AudioDripUser = { id: data.user.id, email: data.user.email };
-          localStorage.setItem('audiodrip_user', JSON.stringify(user));
-          set({ user, authLoading: false, showAuthModal: false, authMessage: 'Email verified successfully!' });
-          // Fetch authenticated user's content
-          await get().fetchLikedSongs();
-          await get().fetchPlaylists();
-          await get().fetchLibrary();
-          await get().fetchPreferences();
-          await get().fetchChart();
-          
-          // Check preferences
-          const prefs = get().userPreferences;
-          if (prefs.languages.length === 0 && prefs.genres.length === 0) {
-            set({ showPrefsModal: true });
-          }
-        }
-      } catch (err) {
-        console.error("Verification error:", err);
-        set({ authError: "Failed to connect to authentication server", authLoading: false });
-      }
-    },
-
-    resendVerification: async (email) => {
-      set({ authLoading: true, authError: null, authMessage: null });
-      try {
-        const response = await fetch('/api/mobile/resend_verification', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email })
-        });
-        const data = await response.json();
-        if (!response.ok || data.error) {
-          set({ authError: data.error || 'Failed to resend code', authLoading: false });
-        } else {
-          set({ authMessage: data.message || 'A new verification code has been sent!', authLoading: false });
-        }
-      } catch (err) {
-        console.error("Resend verification error:", err);
-        set({ authError: "Failed to connect to authentication server", authLoading: false });
-      }
-    },
-
-    signOut: async () => {
-      set({ authLoading: true, authError: null, authMessage: null });
-      localStorage.removeItem('audiodrip_user');
-      localStorage.removeItem('audiodrip_mock_user'); // clean up legacy key
-      set({ user: null, authLoading: false });
-      // Reload public lists
-      await get().fetchLikedSongs();
-      await get().fetchPlaylists();
-      await get().fetchLibrary();
-      await get().fetchChart();
-    },
-
-    initAuth: () => {
-      const savedTheme = typeof window !== 'undefined' ? localStorage.getItem('audiodrip_theme') || 'dark' : 'dark';
-      if (typeof window !== 'undefined') {
-        if (savedTheme === 'light') {
-          document.documentElement.classList.add('light');
-        } else {
-          document.documentElement.classList.remove('light');
-        }
+      // Apply saved theme
+      const savedTheme = localStorage.getItem('audiodrip_theme') || 'dark';
+      if (savedTheme === 'light') {
+        document.documentElement.classList.add('light');
+      } else {
+        document.documentElement.classList.remove('light');
       }
 
-      if (typeof window !== 'undefined') {
-        // Try the new key first, then fall back to legacy key
-        const stored = localStorage.getItem('audiodrip_user') || localStorage.getItem('audiodrip_mock_user');
-        if (stored) {
-          try {
-            const parsed = JSON.parse(stored);
-            if (parsed && parsed.email) {
-              set({ user: { id: parsed.id || '', email: parsed.email } });
-            }
-          } catch {
-            // Ignore parse errors
-          }
-        }
-        // Load stored preferences (for guests too)
-        const storedPrefs = localStorage.getItem('audiodrip_prefs');
-        if (storedPrefs) {
-          try {
-            const prefs = JSON.parse(storedPrefs) as UserPreferences;
-            set({ userPreferences: prefs });
-          } catch { /* ignore */ }
-        }
-      }
-    },
+      // Initialize stable device ID
+      const deviceId = getOrCreateDeviceId();
+      set({ deviceId });
 
-    sendPasswordResetEmail: async (email) => {
-      if (!email.trim()) {
-        set({ authError: 'Please enter your email address', authLoading: false });
-        return;
-      }
-      set({ authLoading: true, authError: null, authMessage: null });
-      try {
-        const response = await fetch(`/api/mobile/check_email?email=${encodeURIComponent(email.trim().toLowerCase())}`);
-        const data = await response.json();
-        if (!data.exists) {
-          set({ authError: 'No account found with that email address.', authLoading: false });
-          return;
-        }
-        // User exists — store email for password reset step
-        if (typeof window !== 'undefined') {
-          sessionStorage.setItem('audiodrip_reset_email', email.trim().toLowerCase());
-        }
-        set({
-          authMessage: 'Email verified! Click the button below to enter your new password.',
-          authLoading: false
-        });
-      } catch {
-        set({ authError: 'Could not reach server. Please try again.', authLoading: false });
-      }
-    },
-
-    updatePassword: async (password) => {
-      if (!password || password.length < 6) {
-        set({ authError: 'Password must be at least 6 characters.', authLoading: false });
-        return;
-      }
-      set({ authLoading: true, authError: null, authMessage: null });
-      const resetEmail = typeof window !== 'undefined' ? sessionStorage.getItem('audiodrip_reset_email') : null;
-      if (!resetEmail) {
-        set({ authError: 'Session expired. Please restart the password reset flow.', authLoading: false });
-        return;
-      }
-      try {
-        const response = await fetch('/api/mobile/update_password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: resetEmail, new_password: password })
-        });
-        const data = await response.json();
-        if (!response.ok || data.error) {
-          set({ authError: data.error || 'Password update failed.', authLoading: false });
-        } else {
-          if (typeof window !== 'undefined') {
-            sessionStorage.removeItem('audiodrip_reset_email');
-          }
-          set({
-            authMessage: 'Password updated! Please sign in with your new password.',
-            authLoading: false,
-            authView: 'signin'
-          });
-        }
-      } catch {
-        set({ authError: 'Could not reach server. Please try again.', authLoading: false });
+      // Load stored preferences
+      const storedPrefs = localStorage.getItem('audiodrip_prefs');
+      if (storedPrefs) {
+        try {
+          const prefs = JSON.parse(storedPrefs) as UserPreferences;
+          set({ userPreferences: prefs });
+        } catch { /* ignore */ }
       }
     },
 
@@ -1234,4 +986,3 @@ export const getGlobalAnalyser = () => globalAnalyser;
 export const setGlobalAnalyser = (analyser: AnalyserNode | null) => {
   globalAnalyser = analyser;
 };
-

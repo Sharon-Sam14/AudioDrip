@@ -131,52 +131,52 @@ export const TrackCard: React.FC<TrackCardProps> = ({
           </button>
         </div>
 
-        {/* Add to Playlist button */}
-        {onAddToPlaylist && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onAddToPlaylist(track, e);
-            }}
-            className="absolute top-3 right-[5.25rem] p-2 rounded-full bg-black/45 text-txt-primary hover:text-accent-amber hover:scale-110 transition-all z-20"
-            title="Add to Playlist"
-          >
-            <Plus className="w-3.5 h-3.5 text-txt-primary" />
-          </button>
-        )}
+        {/* Top-right action buttons */}
+        <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-20">
+          {onAddToPlaylist && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onAddToPlaylist(track, e);
+              }}
+              className="p-2.5 md:p-2 rounded-full bg-black/55 text-txt-primary hover:text-accent-amber hover:scale-110 transition-all flex items-center justify-center min-w-[38px] min-h-[38px] md:min-w-0 md:min-h-0 cursor-pointer"
+              title="Add to Playlist"
+            >
+              <Plus className="w-3.5 h-3.5 text-txt-primary" />
+            </button>
+          )}
 
-        {/* Cache/Download button */}
-        {onCache && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onCache(track, e);
-            }}
-            className="absolute top-3 right-12 p-2 rounded-full bg-black/45 text-txt-primary hover:text-accent-amber hover:scale-110 transition-all z-20"
-            title={track.cached ? "Cached Offline" : "Download Offline"}
-          >
-            {track.cached ? (
-              <Check className="w-3.5 h-3.5 text-green-400" />
-            ) : (
-              <Download className="w-3.5 h-3.5 text-txt-primary" />
-            )}
-          </button>
-        )}
+          {onCache && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onCache(track, e);
+              }}
+              className="p-2.5 md:p-2 rounded-full bg-black/55 text-txt-primary hover:text-accent-amber hover:scale-110 transition-all flex items-center justify-center min-w-[38px] min-h-[38px] md:min-w-0 md:min-h-0 cursor-pointer"
+              title={track.cached ? "Cached Offline" : "Download Offline"}
+            >
+              {track.cached ? (
+                <Check className="w-3.5 h-3.5 text-green-400" />
+              ) : (
+                <Download className="w-3.5 h-3.5 text-txt-primary" />
+              )}
+            </button>
+          )}
 
-        {/* Favorite/Heart top-right floating button */}
-        {onToggleLike && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleLike(track.id, e);
-            }}
-            className="absolute top-3 right-3 p-2 rounded-full bg-black/45 text-txt-primary hover:text-accent-rose hover:scale-110 transition-all z-20"
-          >
-            <Heart 
-              className={`w-3.5 h-3.5 ${track.isLiked ? 'fill-[#E11D72] text-[#E11D72]' : 'text-txt-primary'}`} 
-            />
-          </button>
-        )}
+          {onToggleLike && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleLike(track.id, e);
+              }}
+              className="p-2.5 md:p-2 rounded-full bg-black/55 text-txt-primary hover:text-accent-rose hover:scale-110 transition-all flex items-center justify-center min-w-[38px] min-h-[38px] md:min-w-0 md:min-h-0 cursor-pointer"
+            >
+              <Heart 
+                className={`w-3.5 h-3.5 ${track.isLiked ? 'fill-[#E11D72] text-[#E11D72]' : 'text-txt-primary'}`} 
+              />
+            </button>
+          )}
+        </div>
       </motion.div>
 
       {/* ZONE 2: INFO STRIP (35% height) */}

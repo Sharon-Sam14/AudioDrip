@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { 
   Play, Pause, SkipForward, SkipBack, Search, Music, 
   Library, Trash2, FolderPlus, X, Settings, 
-  Grid, List, User2, Loader2, Sparkles, Download, Check, Heart,
-  Sliders, Globe, Repeat
+  Grid, List, Loader2, Sparkles, Download, Check, Heart,
+  Sliders, Globe, Repeat, Menu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMusicStore, seedTracks, trackToSong, songToTrack, getGlobalAudioElement } from './store/useMusicStore';
@@ -89,9 +89,9 @@ const scoreTrackByPrefs = (track: Track, prefs: UserPreferences): number => {
 // -------------------------------------------------------------
 
 const HeroSkeleton = () => (
-  <div className="relative w-full h-[45vh] min-h-[300px] rounded-3xl overflow-hidden border border-border-subtle bg-bg-tertiary p-8 flex items-center gap-12 animate-waveform-idle">
-    <div className="w-[40%] aspect-square max-w-[220px] rounded-2xl bg-bg-secondary flex-shrink-0" />
-    <div className="w-[60%] flex flex-col gap-4">
+  <div className="relative w-full md:h-[45vh] md:min-h-[300px] rounded-3xl overflow-hidden border border-border-subtle bg-bg-tertiary p-6 md:p-8 flex flex-col md:flex-row items-center gap-6 md:gap-12 animate-waveform-idle">
+    <div className="w-full md:w-[40%] aspect-square max-w-[200px] md:max-w-[220px] rounded-2xl bg-bg-secondary flex-shrink-0" />
+    <div className="w-full md:w-[60%] flex flex-col gap-4 items-center md:items-start">
       <div className="h-3 bg-bg-secondary rounded w-1/4" />
       <div className="h-10 bg-bg-secondary rounded w-3/4" />
       <div className="h-5 bg-bg-secondary rounded w-1/2" />
@@ -195,26 +195,11 @@ export default function App() {
     skipPrev: handlePrevSong,
     
     // Auth
-    user,
-    authLoading,
-    authError,
-    signUp,
-    signIn,
-    verifyEmail,
-    resendVerification,
-    signOut,
-    initAuth,
     theme,
     toggleTheme,
     isGeneratingAIPlaylist,
     handleGenerateAIPlaylist,
-    showAuthModal,
-    setShowAuthModal,
-    authView,
-    setAuthView,
-    authMessage,
-    sendPasswordResetEmail,
-    updatePassword,
+    initApp,
 
     // Setters
     play,
@@ -235,9 +220,6 @@ export default function App() {
     toggleRepeat,
   } = useMusicStore();
 
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [verificationCode, setVerificationCode] = useState('');
   const [aiPrompt, setAiPrompt] = useState('');
   
   // Spotlight modal state
@@ -246,6 +228,16 @@ export default function App() {
 
   // Skeleton loading state
   const [isLoading, setIsLoading] = useState(true);
+
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Local preference editor state (inside the modal)
   const [prefLangs, setPrefLangs] = useState<string[]>([]);
@@ -266,7 +258,7 @@ export default function App() {
 
   // Initialize
   useEffect(() => {
-    initAuth();
+    initApp();
     fetchChart();
     fetchLibrary();
     fetchLikedSongs();
@@ -279,7 +271,7 @@ export default function App() {
     }, 1200);
 
     return () => clearTimeout(timer);
-  }, [initAuth, fetchChart, fetchLibrary, fetchLikedSongs, fetchUploadedSongs, fetchPlaylists]);
+  }, [initApp, fetchChart, fetchLibrary, fetchLikedSongs, fetchUploadedSongs, fetchPlaylists]);
 
 
   // Listen to Cmd/Ctrl + K to toggle spotlight search modal
@@ -375,11 +367,23 @@ export default function App() {
       {/* 2D Motes background layer */}
       <ParticleField />
 
+      {/* Mobile Sidebar Overlay Backdrop */}
+      {windowWidth < 768 && isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 transition-opacity"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
       {/* Grid Layout structure (Sidebar | Main Floor | The Booth Right Panel) */}
       <div 
         className={`w-full min-h-screen grid ${shouldReduceMotion ? '' : 'transition-[grid-template-columns] duration-500 ease-in-out'} relative overflow-hidden`}
         style={{
-          gridTemplateColumns: `${isSidebarExpanded ? '240px' : '64px'} 1fr ${isBoothOpen && activeTrackObj ? '320px' : '0px'}`,
+          gridTemplateColumns: windowWidth < 768
+            ? '0px 1fr 0px'
+            : windowWidth < 1024
+              ? '64px 1fr 0px'
+              : `${isSidebarExpanded ? '240px' : '64px'} 1fr ${isBoothOpen && activeTrackObj ? '320px' : '0px'}`,
         }}
       >
         
@@ -387,9 +391,15 @@ export default function App() {
             A. LEFT SIDEBAR — "CATALOG RAIL"
             ======================================================== */}
         <aside
-          onMouseEnter={() => !isSidebarExpanded && toggleSidebar()}
-          onMouseLeave={() => isSidebarExpanded && toggleSidebar()}
-          className="w-full bg-bg-secondary border-r border-border-subtle flex flex-col justify-between items-center py-6 h-screen overflow-hidden z-30"
+          onMouseEnter={() => windowWidth >= 1024 && !isSidebarExpanded && toggleSidebar()}
+          onMouseLeave={() => windowWidth >= 1024 && isSidebarExpanded && toggleSidebar()}
+          className={`
+            bg-bg-secondary border-r border-border-subtle flex flex-col justify-between items-center py-6 overflow-hidden
+            ${windowWidth < 768 
+              ? 'fixed top-0 left-0 bottom-0 z-50 w-[240px] h-screen transition-transform duration-300 ' + (isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full') 
+              : 'w-full h-screen z-30'
+            }
+          `}
         >
           {/* Top Branding Logo */}
           <div className="w-full px-4 flex items-center gap-3 justify-center">
@@ -397,7 +407,7 @@ export default function App() {
               <Music className="w-4.5 h-4.5 text-txt-primary" />
             </div>
             <AnimatePresence>
-              {isSidebarExpanded && (
+              {(isSidebarExpanded || isMobileMenuOpen) && (
                 <motion.span 
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
@@ -413,10 +423,10 @@ export default function App() {
           {/* Navigation Links list */}
           <div className="w-full flex-1 flex flex-col gap-6 justify-center px-2">
             {[
-              { id: 'discover', name: 'Discover', icon: Music, action: () => { setActiveTab('discover'); setSelectedPlaylist(null); } },
-              { id: 'search', name: 'Search (⌘K)', icon: Search, action: () => setIsSearchOpen(true) },
-              { id: 'library', name: 'Library', icon: Library, action: () => { setActiveTab('library'); setSelectedPlaylist(null); } },
-              { id: 'ai_helper', name: 'AI Helper', icon: Sparkles, action: () => setIsAIPanelOpen(!isAIPanelOpen) }
+              { id: 'discover', name: 'Discover', icon: Music, action: () => { setActiveTab('discover'); setSelectedPlaylist(null); if (windowWidth < 768) setIsMobileMenuOpen(false); } },
+              { id: 'search', name: 'Search (⌘K)', icon: Search, action: () => { setIsSearchOpen(true); if (windowWidth < 768) setIsMobileMenuOpen(false); } },
+              { id: 'library', name: 'Library', icon: Library, action: () => { setActiveTab('library'); setSelectedPlaylist(null); if (windowWidth < 768) setIsMobileMenuOpen(false); } },
+              { id: 'ai_helper', name: 'AI Helper', icon: Sparkles, action: () => { setIsAIPanelOpen(!isAIPanelOpen); if (windowWidth < 768) setIsMobileMenuOpen(false); } }
             ].map((item) => {
               const isActive = item.id === 'ai_helper' ? isAIPanelOpen : activeTab === item.id;
               const Icon = item.icon;
@@ -439,7 +449,7 @@ export default function App() {
                   </div>
 
                   <AnimatePresence>
-                    {isSidebarExpanded && (
+                    {(isSidebarExpanded || isMobileMenuOpen) && (
                       <motion.span
                         initial={{ opacity: 0, x: -15 }}
                         animate={{ opacity: 1, x: 0 }}
@@ -457,7 +467,7 @@ export default function App() {
 
             {/* Sub-playlists links if sidebar is expanded */}
             <AnimatePresence>
-              {isSidebarExpanded && playlists.length > 0 && (
+              {(isSidebarExpanded || isMobileMenuOpen) && playlists.length > 0 && (
                 <motion.div 
                   initial={{ opacity: 0 }} 
                   animate={{ opacity: 1 }} 
@@ -472,6 +482,7 @@ export default function App() {
                         setSelectedPlaylist(p);
                         setActiveTab('library');
                         setLibrarySubTab('playlists');
+                        if (windowWidth < 768) setIsMobileMenuOpen(false);
                       }}
                       className={`text-left text-[11px] font-semibold truncate hover:text-accent-amber transition-colors ${
                         selectedPlaylist?.id === p.id ? 'text-accent-amber font-bold' : 'text-txt-muted'
@@ -501,7 +512,7 @@ export default function App() {
                     />
                   </div>
                   <AnimatePresence>
-                    {isSidebarExpanded && (
+                    {(isSidebarExpanded || isMobileMenuOpen) && (
                       <motion.div 
                         initial={{ opacity: 0, x: -10 }}
                         animate={{ opacity: 1, x: 0 }}
@@ -517,7 +528,7 @@ export default function App() {
                     )}
                   </AnimatePresence>
                 </div>
-                {!isSidebarExpanded && (
+                {!(isSidebarExpanded || isMobileMenuOpen) && (
                   <span className="text-[7px] font-bold text-accent-amber tracking-wider uppercase">
                     {isPlaying ? 'PLAY' : 'PAUSED'}
                   </span>
@@ -533,64 +544,44 @@ export default function App() {
               <Settings className="w-4.5 h-4.5" />
             </button>
 
-            {/* User credentials / Profile */}
-            <div className="w-full border-t border-border-subtle/40 pt-4 flex items-center justify-center">
-              {user ? (
-                <button
-                  onClick={() => signOut()}
-                  className="flex items-center gap-2 cursor-pointer w-full justify-center px-2"
-                >
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-accent-rose to-accent-sienna flex items-center justify-center text-white text-xs font-bold border border-white/10">
-                    {user.email?.slice(0, 2).toUpperCase()}
-                  </div>
-                  <AnimatePresence>
-                    {isSidebarExpanded && (
-                      <motion.div 
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -10 }}
-                        className="text-left min-w-0 flex-1"
-                      >
-                        <p className="text-[10px] font-bold truncate text-txt-primary">{user.email}</p>
-                        <p className="text-[8px] font-medium text-txt-muted uppercase">Sign Out</p>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </button>
-              ) : (
-                <button
-                  onClick={() => setShowAuthModal(true)}
-                  className="w-full flex items-center justify-center p-2 rounded-xl bg-txt-primary hover:bg-txt-primary/90 text-bg-primary text-[10px] font-bold tracking-wider uppercase transition-colors cursor-pointer"
-                >
-                  {isSidebarExpanded ? 'Sign In' : <User2 className="w-4 h-4" />}
-                </button>
-              )}
-            </div>
+
           </div>
         </aside>
 
         {/* ========================================================
             B. MAIN CONTENT — "THE FLOOR"
             ======================================================== */}
-        <main className="flex-grow flex-shrink min-w-0 h-screen overflow-y-auto px-8 py-10 custom-scrollbar flex flex-col gap-10">
+        <main className="flex-grow flex-shrink min-w-0 h-screen overflow-y-auto px-4 md:px-8 py-5 md:py-10 custom-scrollbar flex flex-col gap-6 md:gap-10">
           
           {/* Upper Nav Header bar */}
-          <header className="flex justify-between items-center z-10">
+          <header className="flex justify-between items-center z-10 gap-3">
+            {windowWidth < 768 && (
+              <button
+                onClick={() => setIsMobileMenuOpen(true)}
+                className="p-2.5 rounded-xl bg-bg-secondary border border-border-subtle text-txt-secondary hover:text-txt-primary transition-colors cursor-pointer flex-shrink-0"
+                aria-label="Open menu"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+            )}
+
             {/* Search command bar search block */}
             <div 
               onClick={() => setIsSearchOpen(true)}
-              className="group flex items-center gap-3 px-4 py-2.5 bg-bg-secondary border border-border-subtle rounded-xl text-txt-muted hover:border-border-warm/25 cursor-pointer max-w-sm w-full transition-all"
+              className="group flex items-center gap-3 px-4 py-2.5 bg-bg-secondary border border-border-subtle rounded-xl text-txt-muted hover:border-border-warm/25 cursor-pointer flex-1 max-w-sm transition-all"
             >
-              <Search className="w-4 h-4 text-txt-muted group-hover:text-accent-amber transition-colors" />
-              <span className="text-xs font-semibold tracking-wide">Search songs, artists (⌘K)</span>
+              <Search className="w-4 h-4 text-txt-muted group-hover:text-accent-amber transition-colors flex-shrink-0" />
+              <span className="text-xs font-semibold tracking-wide truncate">
+                {windowWidth < 768 ? 'Search...' : 'Search songs, artists (⌘K)'}
+              </span>
             </div>
 
             {/* Quick theme swapper toggler */}
             <button
               onClick={toggleTheme}
-              className="px-4 py-2 rounded-xl bg-bg-secondary border border-border-subtle hover:border-border-warm/25 text-xs font-bold uppercase tracking-wider text-txt-secondary hover:text-txt-primary transition-all cursor-pointer"
+              className="px-3 md:px-4 py-2 rounded-xl bg-bg-secondary border border-border-subtle hover:border-border-warm/25 text-xs font-bold uppercase tracking-wider text-txt-secondary hover:text-txt-primary transition-all cursor-pointer flex-shrink-0 whitespace-nowrap"
             >
-              ✦ {theme === 'dark' ? 'Daylight Session' : 'Obsidian Studio'}
+              {windowWidth < 768 ? (theme === 'dark' ? '☀️' : '🌙') : `✦ ${theme === 'dark' ? 'Daylight Session' : 'Obsidian Studio'}`}
             </button>
           </header>
 
@@ -611,16 +602,16 @@ export default function App() {
                     <HeroSkeleton />
                   ) : (
                     heroTrack && (
-                      <section className="relative w-full h-[45vh] min-h-[300px] rounded-3xl overflow-hidden border border-border-subtle shadow-xl bg-gradient-to-br from-[#1A1714] to-[#0C0A09] flex p-8 gap-12 items-center">
+                      <section className="relative w-full md:h-[45vh] md:min-h-[300px] rounded-3xl overflow-hidden border border-border-subtle shadow-xl bg-gradient-to-br from-[#1A1714] to-[#0C0A09] flex flex-col md:flex-row p-6 md:p-8 gap-6 md:gap-12 items-center">
                         {/* Background subtle radial amber glow behind record */}
                         <div className="absolute left-[20%] top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-accent-glow rounded-full blur-[80px] pointer-events-none animate-pulse-warm" />
                         
                         {/* Left 40%: Album Art sleeve and vinyl */}
-                        <div className="w-[40%] h-full flex-shrink-0 flex items-center justify-center relative min-w-[200px]">
+                        <div className="w-full md:w-[40%] h-48 md:h-full flex-shrink-0 flex items-center justify-center relative max-w-[240px] md:max-w-none">
                           {/* Album cover art */}
                           <motion.div 
                             layoutId={`vinyl-cover-${heroTrack.id}`}
-                            className="absolute left-0 w-[70%] aspect-square bg-[#1A1714] rounded-2xl overflow-hidden border border-border-subtle shadow-2xl z-10"
+                            className="absolute left-4 md:left-0 w-[60%] md:w-[70%] aspect-square bg-[#1A1714] rounded-2xl overflow-hidden border border-border-subtle shadow-2xl z-10"
                           >
                             <img 
                               src={heroTrack.coverUrl} 
@@ -630,7 +621,7 @@ export default function App() {
                           </motion.div>
 
                           {/* Large Vinyl Record centering absolute over cover art */}
-                          <div className="absolute right-[-10%] top-1/2 -translate-y-1/2 z-0 scale-75 md:scale-100">
+                          <div className="absolute right-[10%] md:right-[-10%] top-1/2 -translate-y-1/2 z-0 scale-75 md:scale-100">
                             <VinylRecord 
                               coverUrl={heroTrack.coverUrl} 
                               isPlaying={isPlaying && activeTrackObj?.id === heroTrack.id} 
@@ -640,19 +631,19 @@ export default function App() {
                         </div>
 
                         {/* Right 60%: Editorial Text */}
-                        <div className="w-[60%] h-full flex flex-col justify-center text-left relative z-10 pl-6">
+                        <div className="w-full md:w-[60%] md:h-full flex flex-col justify-center text-center md:text-left relative z-10 pl-0 md:pl-6 items-center md:items-start">
                           <span className="text-[10px] font-black text-accent-amber tracking-widest uppercase mb-3">Featured Release</span>
-                          <h2 className="font-serif font-black text-3xl md:text-5xl uppercase tracking-widest text-[#FAF7F4] leading-tight line-clamp-2">
+                          <h2 className="font-serif font-black text-2xl md:text-5xl uppercase tracking-widest text-[#FAF7F4] leading-tight line-clamp-2">
                             {heroTrack.title}
                           </h2>
-                          <h3 className="text-lg md:text-xl font-medium text-txt-secondary mt-2">
+                          <h3 className="text-sm md:text-xl font-medium text-txt-secondary mt-1 md:mt-2">
                             {heroTrack.artist}
                           </h3>
-                          <p className="text-xs font-medium text-txt-muted max-w-lg mt-4 line-clamp-3 leading-relaxed">
+                          <p className="text-xs font-medium text-txt-muted max-w-lg mt-3 md:mt-4 line-clamp-3 md:line-clamp-4 leading-relaxed">
                             A timeless masterpiece leading the charts with over {(heroTrack.playCount / 1000).toFixed(0)}K monthly sessions. Play now to experience analog sound textures. Currently trending across global ambient sessions.
                           </p>
 
-                          <div className="flex items-center gap-4 mt-6">
+                          <div className="flex items-center gap-4 mt-4 md:mt-6">
                             <MagneticButton
                               onClick={() => play(heroTrack)}
                               className="px-6 py-3 rounded-full bg-accent-amber text-[#0C0A09] text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-xl hover:bg-accent-amber/90 transition-all"
@@ -754,7 +745,7 @@ export default function App() {
                     <div>
                       {isLoading ? (
                         viewMode === 'grid' ? (
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
                             {Array.from({ length: 8 }).map((_, idx) => (
                               <TrackCardSkeleton key={idx} />
                             ))}
@@ -783,7 +774,7 @@ export default function App() {
                           }}
                           initial="hidden"
                           animate="visible"
-                          className="grid grid-cols-2 md:grid-cols-4 gap-6"
+                          className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6"
                         >
                           {sortedChartTracks.map((track) => (
                             <TrackCard
@@ -1021,7 +1012,7 @@ export default function App() {
               {activeTab === 'library' && (
                 <div className="flex flex-col gap-8">
                   {/* Library Subtabs swappers header */}
-                  <div className="flex items-center justify-between border-b border-border-subtle/50 pb-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border-subtle/50 pb-3">
                     <div className="flex items-center gap-3">
                       <span className="font-serif italic text-lg text-accent-amber font-bold">L</span>
                       <h3 className="font-serif font-black text-2xl uppercase tracking-wider text-txt-primary">
@@ -1029,7 +1020,7 @@ export default function App() {
                       </h3>
                     </div>
 
-                     <div className="flex gap-2.5">
+                    <div className="flex flex-wrap gap-2">
                       <button
                         onClick={() => { setLibrarySubTab('liked'); setSelectedPlaylist(null); }}
                         className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
@@ -1132,7 +1123,7 @@ export default function App() {
                     <div>
                       {/* LIKED SONGS LIST */}
                       {librarySubTab === 'liked' && (
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
                           {mappedLikedTracks.length === 0 ? (
                             <div className="col-span-full py-12 text-center text-txt-muted text-xs font-semibold">
                               No liked records yet. Start exploration using Discover tab.
@@ -1156,7 +1147,7 @@ export default function App() {
 
                       {/* OFFLINE CACHED SONGS LIST */}
                       {librarySubTab === 'cached' && (
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
                           {mappedLibraryTracks.length === 0 ? (
                             <div className="col-span-full py-12 text-center text-txt-muted text-xs font-semibold">
                               No tracks cached locally. Turn on caching in song tiles.
@@ -1196,7 +1187,7 @@ export default function App() {
                               </button>
                             </div>
 
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
                               {mappedUploadedTracks.length === 0 ? (
                                 <div className="col-span-full py-12 text-center text-txt-muted text-xs font-semibold">
                                   No uploaded tracks yet. Upload your first track above.
@@ -1282,7 +1273,7 @@ export default function App() {
                               No playlists created yet. Start by creating a custom folder above.
                             </div>
                           ) : (
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
                               {playlists.map((p) => (
                                 <div
                                   key={p.id}
@@ -1317,9 +1308,17 @@ export default function App() {
             C. RIGHT PANEL — "THE BOOTH"
             ======================================================== */}
         <aside
-          className="w-full bg-bg-secondary border-l border-border-subtle flex flex-col justify-between h-screen overflow-hidden z-20 relative"
+          className={`
+            bg-bg-secondary flex flex-col justify-between h-screen overflow-hidden z-30 transition-all duration-300
+            ${windowWidth < 768
+              ? `fixed inset-0 w-full z-50 ${isBoothOpen && activeTrackObj ? 'translate-x-0' : 'translate-x-full'}`
+              : windowWidth < 1024
+                ? `fixed top-0 right-0 bottom-0 w-[320px] z-40 border-l border-border-subtle shadow-2xl ${isBoothOpen && activeTrackObj ? 'translate-x-0' : 'translate-x-full'}`
+                : `w-full border-l border-border-subtle relative ${isBoothOpen && activeTrackObj ? 'opacity-100' : 'opacity-0 pointer-events-none'}`
+            }
+          `}
         >
-          <div className="w-[320px] h-full flex flex-col py-6 px-6 overflow-y-auto custom-scrollbar gap-0">
+          <div className="w-full md:w-[320px] h-full flex flex-col py-6 px-6 overflow-y-auto custom-scrollbar gap-0 relative mx-auto">
             {/* Close panel toggle button */}
             <button
               onClick={toggleBooth}
@@ -1629,13 +1628,13 @@ export default function App() {
               </div>
 
               {/* Play Pause trigger */}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 sm:gap-2">
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     handlePrevSong();
                   }}
-                  className="p-1.5 text-txt-secondary hover:text-txt-primary transition-colors cursor-pointer"
+                  className="p-3 text-txt-secondary hover:text-txt-primary transition-colors cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center"
                 >
                   <SkipBack className="w-3.5 h-3.5 fill-current" />
                 </button>
@@ -1645,7 +1644,7 @@ export default function App() {
                     e.stopPropagation();
                     handleTogglePlay();
                   }}
-                  className="p-2.5 rounded-full bg-accent-amber text-[#0C0A09] shadow"
+                  className="p-3 rounded-full bg-accent-amber text-[#0C0A09] shadow min-w-[44px] min-h-[44px] flex items-center justify-center"
                 >
                   {isPlaying ? (
                     <Pause className="w-4 h-4 fill-current" />
@@ -1659,7 +1658,7 @@ export default function App() {
                     e.stopPropagation();
                     handleNextSong();
                   }}
-                  className="p-1.5 text-txt-secondary hover:text-txt-primary transition-colors cursor-pointer"
+                  className="p-3 text-txt-secondary hover:text-txt-primary transition-colors cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center"
                 >
                   <SkipForward className="w-3.5 h-3.5 fill-current" />
                 </button>
@@ -1671,7 +1670,7 @@ export default function App() {
                     handleToggleLike(trackToSong(activeTrackObj), e);
                   }}
                   title={activeTrackObj.isLiked ? 'Unlike' : 'Like'}
-                  className="p-1.5 transition-colors cursor-pointer"
+                  className="p-3 transition-colors cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center"
                 >
                   <Heart className={`w-3.5 h-3.5 transition-all ${activeTrackObj.isLiked ? 'fill-[#E11D72] text-[#E11D72]' : 'text-txt-muted hover:text-[#E11D72]'}`} />
                 </button>
@@ -1685,7 +1684,7 @@ export default function App() {
                     setShowAddModal(true);
                   }}
                   title="Add to Playlist"
-                  className="p-1.5 text-txt-muted hover:text-accent-amber transition-colors cursor-pointer"
+                  className="p-3 text-txt-muted hover:text-accent-amber transition-colors cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center"
                 >
                   <FolderPlus className="w-3.5 h-3.5" />
                 </button>
@@ -1947,8 +1946,7 @@ export default function App() {
                 onSubmit={async (e) => {
                   e.preventDefault();
                   if (!newPlaylistName.trim()) return;
-                  const currentUser = useMusicStore.getState().user;
-                  const userId = currentUser?.email || 'anonymous';
+                  const userId = useMusicStore.getState().deviceId;
                   try {
                     const res = await fetch(`/api/mobile/playlists?name=${encodeURIComponent(newPlaylistName)}&user_id=${encodeURIComponent(userId)}`, { method: 'POST' });
                     const data = await res.json();
@@ -1989,245 +1987,6 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* ========================================================
-          AUTHENTICATION SIGN IN / SIGN UP MODAL
-          ======================================================== */}
-      <AnimatePresence>
-        {showAuthModal && (
-          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="absolute inset-0 z-0" onClick={() => setShowAuthModal(false)} />
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-bg-secondary border border-border-subtle rounded-2xl max-w-sm w-full p-6 relative z-10 shadow-2xl flex flex-col gap-4"
-            >
-              <button 
-                onClick={() => setShowAuthModal(false)}
-                className="absolute top-4 right-4 p-1.5 text-txt-muted hover:text-txt-primary rounded-lg hover:bg-bg-tertiary transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-
-              {authView === 'signin' && (
-                <>
-                  <h4 className="font-serif font-black text-2xl text-txt-primary text-center mt-2">OBSIDIAN STUDIO LOGIN</h4>
-                  {authError && <div className="text-red-400 text-xs font-semibold text-center bg-red-500/10 p-2.5 rounded-lg border border-red-500/20">{authError}</div>}
-                  {authMessage && <div className="text-green-400 text-xs font-semibold text-center bg-green-500/10 p-2.5 rounded-lg border border-green-500/20">{authMessage}</div>}
-                  
-                  <form 
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      signIn(authEmail, authPassword);
-                    }} 
-                    className="flex flex-col gap-3 mt-2"
-                  >
-                    <input
-                      type="email"
-                      value={authEmail}
-                      onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="Email Address"
-                      className="bg-bg-primary border border-border-subtle rounded-xl px-4 py-3 text-xs font-semibold text-txt-primary focus:outline-none focus:border-accent-amber"
-                      required
-                    />
-                    <input
-                      type="password"
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                      placeholder="Password"
-                      className="bg-bg-primary border border-border-subtle rounded-xl px-4 py-3 text-xs font-semibold text-txt-primary focus:outline-none focus:border-accent-amber"
-                      required
-                    />
-                    <button
-                      type="submit"
-                      disabled={authLoading}
-                      className="py-3 bg-accent-amber text-[#0C0A09] rounded-xl text-xs font-bold uppercase tracking-wider mt-2 transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {authLoading ? 'Signing In...' : 'Access Studio'}
-                    </button>
-                  </form>
-                  <div className="flex flex-col gap-2 text-center text-[10px] font-semibold text-txt-muted mt-2 uppercase tracking-wide">
-                    <button onClick={() => setAuthView('signup')} className="hover:text-accent-amber transition-colors cursor-pointer">Create a new account</button>
-                    <button onClick={() => setAuthView('forgot')} className="hover:text-accent-amber transition-colors cursor-pointer">Forgot credentials?</button>
-                  </div>
-                </>
-              )}
-
-              {authView === 'signup' && (
-                <>
-                  <h4 className="font-serif font-black text-2xl text-txt-primary text-center mt-2">CREATE STUDIO ACCOUNT</h4>
-                  {authError && <div className="text-red-400 text-xs font-semibold text-center bg-red-500/10 p-2.5 rounded-lg border border-red-500/20">{authError}</div>}
-                  
-                  <form 
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      signUp(authEmail, authPassword);
-                    }} 
-                    className="flex flex-col gap-3 mt-2"
-                  >
-                    <input
-                      type="email"
-                      value={authEmail}
-                      onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="Email Address"
-                      className="bg-bg-primary border border-border-subtle rounded-xl px-4 py-3 text-xs font-semibold text-txt-primary focus:outline-none focus:border-accent-amber"
-                      required
-                    />
-                    <input
-                      type="password"
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                      placeholder="Password"
-                      className="bg-bg-primary border border-border-subtle rounded-xl px-4 py-3 text-xs font-semibold text-txt-primary focus:outline-none focus:border-accent-amber"
-                      required
-                    />
-                    <button
-                      type="submit"
-                      disabled={authLoading}
-                      className="py-3 bg-accent-rose text-white rounded-xl text-xs font-bold uppercase tracking-wider mt-2 transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {authLoading ? 'Signing Up...' : 'Register Account'}
-                    </button>
-                  </form>
-                  <div className="text-center text-[10px] font-semibold text-txt-muted mt-2 uppercase tracking-wide">
-                    <button onClick={() => setAuthView('signin')} className="hover:text-accent-amber transition-colors cursor-pointer">Return to sign in</button>
-                  </div>
-                </>
-              )}
-
-              {authView === 'forgot' && (
-                <>
-                  <h4 className="font-serif font-black text-xl text-txt-primary text-center mt-2">RECOVER ACCESS</h4>
-                  {authError && <div className="text-red-400 text-xs font-semibold text-center bg-red-500/10 p-2.5 rounded-lg border border-red-500/20">{authError}</div>}
-                  {authMessage && <div className="text-green-400 text-xs font-semibold text-center bg-green-500/10 p-2.5 rounded-lg border border-green-500/20">{authMessage}</div>}
-                  
-                  <form 
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      sendPasswordResetEmail(authEmail);
-                    }} 
-                    className="flex flex-col gap-3 mt-2"
-                  >
-                    <input
-                      type="email"
-                      value={authEmail}
-                      onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="Email Address"
-                      className="bg-bg-primary border border-border-subtle rounded-xl px-4 py-3 text-xs font-semibold text-txt-primary focus:outline-none"
-                      required
-                    />
-                    <button
-                      type="submit"
-                      disabled={authLoading}
-                      className="py-3 bg-txt-primary hover:bg-txt-primary/90 text-bg-primary rounded-xl text-xs font-bold uppercase tracking-wider mt-2 transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {authLoading ? 'Verifying...' : 'Verify Email'}
-                    </button>
-                  </form>
-
-                  {/* Show "Set New Password" button only after email is verified */}
-                  {authMessage && (
-                    <button
-                      onClick={() => setAuthView('reset')}
-                      className="py-2.5 border border-accent-amber text-accent-amber hover:bg-accent-amber/10 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer mt-2"
-                    >
-                      Set New Password →
-                    </button>
-                  )}
-
-                  <div className="text-center text-[10px] font-semibold text-txt-muted mt-2 uppercase tracking-wide">
-                    <button onClick={() => setAuthView('signin')} className="hover:text-accent-amber transition-colors cursor-pointer">Return to sign in</button>
-                  </div>
-                </>
-              )}
-
-              {authView === 'reset' && (
-                <>
-                  <h4 className="font-serif font-black text-xl text-txt-primary text-center mt-2">RESET PASSWORD</h4>
-                  {authError && <div className="text-red-400 text-xs font-semibold text-center bg-red-500/10 p-2.5 rounded-lg border border-red-500/20">{authError}</div>}
-                  {authMessage && <div className="text-green-400 text-xs font-semibold text-center bg-green-500/10 p-2.5 rounded-lg border border-green-500/20">{authMessage}</div>}
-                  
-                  <form 
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      updatePassword(authPassword);
-                    }} 
-                    className="flex flex-col gap-3 mt-2"
-                  >
-                    <input
-                      type="password"
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                      placeholder="New Password"
-                      className="bg-bg-primary border border-border-subtle rounded-xl px-4 py-3 text-xs font-semibold text-txt-primary focus:outline-none"
-                      required
-                    />
-                    <button
-                      type="submit"
-                      disabled={authLoading}
-                      className="py-3 bg-accent-amber text-[#0C0A09] rounded-xl text-xs font-bold uppercase tracking-wider mt-2 transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {authLoading ? 'Updating...' : 'Update Password'}
-                    </button>
-                  </form>
-                </>
-              )}
-
-              {authView === 'verify' && (
-                <>
-                  <h4 className="font-serif font-black text-xl text-txt-primary text-center mt-2">VERIFY YOUR EMAIL</h4>
-                  {authError && <div className="text-red-400 text-xs font-semibold text-center bg-red-500/10 p-2.5 rounded-lg border border-red-500/20">{authError}</div>}
-                  {authMessage && <div className="text-green-400 text-xs font-semibold text-center bg-green-500/10 p-2.5 rounded-lg border border-green-500/20">{authMessage}</div>}
-                  <p className="text-[11px] text-txt-muted text-center leading-relaxed">
-                    We sent a 6-digit code to <strong>{authEmail}</strong>. Enter it below to activate your account.
-                  </p>
-                  
-                  <form 
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      verifyEmail(authEmail, verificationCode);
-                    }} 
-                    className="flex flex-col gap-3 mt-2"
-                  >
-                    <input
-                      type="text"
-                      value={verificationCode}
-                      onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="6-digit verification code"
-                      className="bg-bg-primary border border-border-subtle rounded-xl px-4 py-3 text-center text-sm font-black tracking-widest text-txt-primary focus:outline-none focus:border-accent-amber"
-                      maxLength={6}
-                      required
-                    />
-                    <button
-                      type="submit"
-                      disabled={authLoading || verificationCode.length !== 6}
-                      className="py-3 bg-accent-amber text-[#0C0A09] rounded-xl text-xs font-bold uppercase tracking-wider mt-2 transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {authLoading ? 'Verifying...' : 'Verify & Log In'}
-                    </button>
-                  </form>
-
-                  <div className="flex justify-between text-[10px] font-semibold text-txt-muted mt-3 uppercase tracking-wide px-1">
-                    <button 
-                      onClick={() => resendVerification(authEmail)} 
-                      disabled={authLoading}
-                      className="hover:text-accent-amber transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      Resend Code
-                    </button>
-                    <button 
-                      onClick={() => setAuthView('signin')} 
-                      className="hover:text-accent-amber transition-colors cursor-pointer"
-                    >
-                      Back to Sign In
-                    </button>
-                  </div>
-                </>
-              )}
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
       {/* ========================================================
           MUSIC PREFERENCES MODAL
           ======================================================== */}
